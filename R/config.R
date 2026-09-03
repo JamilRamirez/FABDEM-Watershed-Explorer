@@ -2,18 +2,12 @@
 # R/config.R
 #
 # FABDEM Watershed Explorer
-# CONFIGURACION LOCAL
-# v8: configuracion integrada DEM + capas tematicas
+# CONFIGURACION REMOTA
+# v9: Runtime GitHub + cache temporal bajo demanda
 # ============================================================
 #
-# Durante desarrollo TODO funciona con dos carpetas hermanas:
-#
-#   .../FABDEM_Watershed_Explorer/
-#   .../FABDEM_Watershed_Runtime/
-#
-# Delimitacion usa Runtime/core.
-# Morfometria usa directamente las teselas originales en
-# Runtime/dem, sin crear DEM por bloque.
+# Todos los recursos de Runtime se descargan desde GitHub solo
+# cuando una operacion los necesita. No se usa una carpeta hermana.
 # ============================================================
 
 
@@ -24,13 +18,42 @@ APP_ROOT <- normalizePath(
 )
 
 
-PROJECT_ROOT <- dirname(
-  APP_ROOT
+DATA_DIR <- file.path(
+  APP_ROOT,
+  "data"
+)
+
+
+REMOTE_SOURCES_CSV <- file.path(
+  DATA_DIR,
+  "remote_sources.csv"
+)
+
+
+runtime_sources <- read.csv(
+  REMOTE_SOURCES_CSV,
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+
+
+if (
+  nrow(runtime_sources) != 1L ||
+  !all(c("SOURCE_ID", "BASE_URL") %in% names(runtime_sources)) ||
+  !nzchar(trimws(runtime_sources[["BASE_URL"]][1]))
+) {
+  stop("data/remote_sources.csv no contiene una URL base valida.")
+}
+
+
+RUNTIME_BASE_URL <- paste0(
+  sub("/+$", "", trimws(runtime_sources[["BASE_URL"]][1])),
+  "/"
 )
 
 
 RUNTIME_ROOT <- file.path(
-  PROJECT_ROOT,
+  tempdir(),
   "FABDEM_Watershed_Runtime"
 )
 
@@ -53,12 +76,6 @@ DEM_DIR <- file.path(
 DEM_TILE_INDEX_RDS <- file.path(
   DEM_DIR,
   "_tile_index_morfometria.rds"
-)
-
-
-DATA_DIR <- file.path(
-  APP_ROOT,
-  "data"
 )
 
 
@@ -133,8 +150,8 @@ CATALOG_READY_FILE <- file.path(
 
 
 OUTPUT_DIR <- file.path(
-  APP_ROOT,
-  "outputs"
+  tempdir(),
+  "FABDEM_WATERSHED_OUTPUTS"
 )
 
 
@@ -153,17 +170,15 @@ DEFAULT_SNAP_RADIUS_M <- 1500
 MAX_CACHED_REVERSE_STRIPES <- 32L
 MAX_CACHED_STREAM_STRIPES <- 8L
 
-FAST_CACHE_BLOCKS <- c(
-  "BLOCK_004"
-)
+FAST_CACHE_BLOCKS <- character(0)
 
-PRELOAD_FAST_CACHE <- TRUE
+PRELOAD_FAST_CACHE <- FALSE
 
 # BLOCK_004: una vez precargados los RDS raw, se intenta
 # concatenarlos en un unico vector raw de ~2.8 GiB.
 # Si R no puede reservarlo, cae automaticamente al cache
 # preloaded por franjas sin detener la app.
-USE_FULL_REVERSE_RAM <- TRUE
+USE_FULL_REVERSE_RAM <- FALSE
 
 # Recorrido por lotes en lugar de profundidad/nivel.
 USE_BATCH_TRACE <- TRUE
@@ -191,35 +206,145 @@ MORPH_SAMPLE_MAX <- 250000L
 
 
 # ------------------------------------------------------------
-# DIRECTORIOS LOCALES
+# CACHE REMOTA
 # ------------------------------------------------------------
 
-if (!dir.exists(RUNTIME_ROOT)) {
-  stop(
-    paste0(
-      "No existe la carpeta runtime esperada:\n",
-      RUNTIME_ROOT,
-      "\n\nLas carpetas FABDEM_Watershed_Explorer y ",
-      "FABDEM_Watershed_Runtime deben estar al mismo nivel.\n",
-      "Runtime: https://github.com/JamilRamirez/",
-      "FABDEM-Watershed-Runtime"
-    )
+dir.create(
+  RUNTIME_ROOT,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+
+runtime_cache_file <- function(path) {
+  if (
+    length(path) != 1L ||
+    is.na(path) ||
+    !nzchar(path)
+  ) {
+    stop("Ruta Runtime vacia.")
+  }
+
+  root <- normalizePath(
+    RUNTIME_ROOT,
+    winslash = "/",
+    mustWork = TRUE
   )
+
+  candidate <- normalizePath(
+    path,
+    winslash = "/",
+    mustWork = FALSE
+  )
+
+  prefix <- paste0(tolower(root), "/")
+
+  if (!startsWith(tolower(candidate), prefix)) {
+    stop(paste0("Ruta fuera del cache Runtime:\n", path))
+  }
+
+  if (
+    file.exists(candidate) &&
+    is.finite(file.info(candidate)$size) &&
+    file.info(candidate)$size > 0
+  ) {
+    return(candidate)
+  }
+
+  relative_path <- substring(candidate, nchar(root) + 2L)
+  remote_url <- paste0(
+    RUNTIME_BASE_URL,
+    utils::URLencode(relative_path)
+  )
+
+  dir.create(
+    dirname(candidate),
+    recursive = TRUE,
+    showWarnings = FALSE
+  )
+
+  partial <- paste0(candidate, ".part")
+  unlink(partial, force = TRUE)
+
+  status <- tryCatch(
+    utils::download.file(
+      remote_url,
+      partial,
+      mode = "wb",
+      quiet = TRUE
+    ),
+    error = function(e) {
+      stop(
+        paste0(
+          "No se pudo descargar el recurso Runtime:\n",
+          remote_url,
+          "\n\n",
+          conditionMessage(e)
+        )
+      )
+    }
+  )
+
+  if (
+    !identical(status, 0L) ||
+    !file.exists(partial) ||
+    !is.finite(file.info(partial)$size) ||
+    file.info(partial)$size <= 0
+  ) {
+    unlink(partial, force = TRUE)
+    stop(paste0("Descarga Runtime incompleta:\n", remote_url))
+  }
+
+  if (!file.rename(partial, candidate)) {
+    unlink(partial, force = TRUE)
+    stop(paste0("No se pudo guardar el recurso Runtime:\n", candidate))
+  }
+
+  candidate
 }
 
 
-if (!dir.exists(CORE_DIR)) {
-  stop(
-    paste0(
-      "No existe:\n",
-      CORE_DIR
-    )
+runtime_file_nonempty <- function(path) {
+  if (
+    length(path) != 1L ||
+    is.na(path) ||
+    !nzchar(path)
+  ) {
+    return(FALSE)
+  }
+
+  root <- normalizePath(
+    RUNTIME_ROOT,
+    winslash = "/",
+    mustWork = TRUE
   )
+
+  candidate <- normalizePath(
+    path,
+    winslash = "/",
+    mustWork = FALSE
+  )
+
+  is_runtime <- startsWith(
+    tolower(candidate),
+    paste0(tolower(root), "/")
+  )
+
+  ready <- if (is_runtime) {
+    tryCatch(
+      runtime_cache_file(candidate),
+      error = function(e) NULL
+    )
+  } else {
+    candidate
+  }
+
+  length(ready) == 1L &&
+    !is.na(ready) &&
+    file.exists(ready) &&
+    is.finite(file.info(ready)$size) &&
+    file.info(ready)$size > 0
 }
-
-
-# No se detiene la app si falta DEM_DIR: Delimitacion
-# debe seguir funcionando. Morfometria valida esta ruta al usarla.
 
 
 dir.create(

@@ -182,7 +182,7 @@ runtime_asset_path <- function(relative_path) {
   }
 
 
-  candidate_norm
+  runtime_cache_file(candidate_norm)
 }
 
 

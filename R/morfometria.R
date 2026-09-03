@@ -479,63 +479,26 @@ morfometria <- local({
   }
 
   get_dem_tile_index <- function() {
-
-    tile_files <- list_dem_tiles()
-
-
-    current_relative <- vapply(
-      tile_files,
-      relative_to_dem,
-      character(1)
+    index_file <- runtime_cache_file(
+      DEM_TILE_INDEX_RDS
     )
 
+    index <- readRDS(
+      index_file
+    )
 
-    if (file.exists(
-      DEM_TILE_INDEX_RDS
-    )) {
-
-      old <- tryCatch(
-        readRDS(
-          DEM_TILE_INDEX_RDS
-        ),
-        error = function(e) NULL
+    if (
+      !inherits(index, "sf") ||
+      !all(c("TILE_NAME", "RELATIVE_PATH") %in% names(index)) ||
+      !identical(
+        attr(index, "morph_tile_index_version"),
+        "v3_explicit_polygon"
       )
-
-
-      if (
-        !is.null(old) &&
-        inherits(
-          old,
-          "sf"
-        ) &&
-        all(
-          c(
-            "TILE_NAME",
-            "RELATIVE_PATH"
-          ) %in% names(old)
-        ) &&
-        identical(
-          attr(
-            old,
-            "morph_tile_index_version"
-          ),
-          "v3_explicit_polygon"
-        ) &&
-        setequal(
-          as.character(
-            old$RELATIVE_PATH
-          ),
-          current_relative
-        )
-      ) {
-        return(old)
-      }
+    ) {
+      stop("El indice remoto de teselas FABDEM no es compatible.")
     }
 
-
-    build_dem_tile_index(
-      tile_files
-    )
+    index
   }
 
 
@@ -588,11 +551,13 @@ morfometria <- local({
       job_id
   ) {
 
-    paths <- file.path(
-      DEM_DIR,
-      as.character(
-        selected_tiles$RELATIVE_PATH
-      )
+    paths <- vapply(
+      file.path(
+        DEM_DIR,
+        as.character(selected_tiles$RELATIVE_PATH)
+      ),
+      runtime_cache_file,
+      character(1)
     )
 
 
@@ -951,11 +916,13 @@ morfometria <- local({
       tile_index = tile_index
     )
 
-    paths <- file.path(
-      DEM_DIR,
-      as.character(
-        selected$RELATIVE_PATH
-      )
+    paths <- vapply(
+      file.path(
+        DEM_DIR,
+        as.character(selected$RELATIVE_PATH)
+      ),
+      runtime_cache_file,
+      character(1)
     )
 
     missing <- paths[
@@ -9069,11 +9036,13 @@ morfometria <- local({
               return(NULL)
             }
 
-            context_paths <- file.path(
-              DEM_DIR,
-              as.character(
-                selected_context$RELATIVE_PATH
-              )
+            context_paths <- vapply(
+              file.path(
+                DEM_DIR,
+                as.character(selected_context$RELATIVE_PATH)
+              ),
+              runtime_cache_file,
+              character(1)
             )
 
             context_paths <- context_paths[

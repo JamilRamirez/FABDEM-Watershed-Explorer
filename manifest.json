@@ -2651,58 +2651,58 @@
       "checksum": "c0591957a60499aa53d05f77265b0522"
     },
     "R/clima.R": {
-      "checksum": "4c3508753e80fc9c2cc0c42bb153b27e"
+      "checksum": "e74fe19dccbb5578da555d6e3fd6b450"
     },
     "R/clima_superficie.R": {
       "checksum": "39a6af3e116a138927cf5c130cd7255c"
     },
     "R/cobertura.R": {
-      "checksum": "2c3c1781e1fdcd569d7e5a448f0e779b"
+      "checksum": "0e2eaca4f04c7a232ae55e9896ee8679"
     },
     "R/config.R": {
-      "checksum": "c994f3b2f85a76a8d7c332cd8a223f66"
+      "checksum": "fc1e7a1d7b31541a7f0bc04286f24471"
     },
     "R/contexto_territorial.R": {
       "checksum": "5983831dd45a754a3c0a17713424c9ad"
     },
     "R/cuencas.R": {
-      "checksum": "301e826ff239b3725815e75842a70be9"
+      "checksum": "9eadaeb93c02bb7cb151d5740443b658"
     },
     "R/cum.R": {
-      "checksum": "4fa9d8e7d8e6ea882cac399f71b879a6"
+      "checksum": "0a9146d1e6faa82a6d24baa80ae3c903"
     },
     "R/delimitacion.R": {
       "checksum": "083026e971cccaf6ab45c92759e54bcc"
     },
     "R/distritos.R": {
-      "checksum": "17e9e76133cc3dbd3401db567d4b6028"
+      "checksum": "a690e872035cf886cccef7a4b05fec44"
     },
     "R/geologia.R": {
-      "checksum": "6ee4d45b7768486407f8e8dddd94f1d7"
+      "checksum": "e217fb137988a3c2d14c3c4f5c730894"
     },
     "R/geomorfologia.R": {
-      "checksum": "c66a6dc053d4fefd5843423396c3c7ca"
+      "checksum": "cd986212dad7cfaec6b2b89125ee6f11"
     },
     "R/helpers.R": {
-      "checksum": "6dda603492f0541fe3d1f9d9791036d5"
+      "checksum": "a33753bb92e1efacad09abc383a8ab10"
     },
     "R/hidrogeologia.R": {
-      "checksum": "5ef2996fc45b1bb18b0159b41b5d7ef9"
+      "checksum": "32c1d6caead3b22e08f99237d544cbc2"
     },
     "R/medio_fisico.R": {
       "checksum": "23350eafe02e71d79fdc13c932874c10"
     },
     "R/morfometria.R": {
-      "checksum": "b0d45beec570c68836b6f5db3ecf4578"
+      "checksum": "427c08cf77e46372f230d1c170507352"
     },
     "R/poblados.R": {
-      "checksum": "b2010c2f1f1e95faf2532b14a8794792"
+      "checksum": "d36c8694515f69e95d1dd70070db4bd4"
     },
     "R/suelos.R": {
-      "checksum": "05362f4711246ed47db4c67355179ae9"
+      "checksum": "33977dfbfe9f5a9224cd0ddffb5cd803"
     },
     "R/vida.R": {
-      "checksum": "d0f3cb067b8b7d075da145e0e4caa046"
+      "checksum": "d89ecc8484dfc0150e0a3f9a887d7b40"
     },
     "www/fabdem.css": {
       "checksum": "b857b493cba5653d8f851bef10cc45ef"

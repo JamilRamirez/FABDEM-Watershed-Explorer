@@ -27,20 +27,7 @@ geologia <- local({
   # ==========================================================
 
   file_nonempty_local <- function(path) {
-    if (
-      length(path) != 1L ||
-      is.na(path) ||
-      !nzchar(path) ||
-      !file.exists(path)
-    ) {
-      return(FALSE)
-    }
-
-    info <- file.info(path)
-    isTRUE(
-      is.finite(info$size) &&
-        info$size > 0
-    )
+    runtime_file_nonempty(path)
   }
 
 
@@ -797,7 +784,7 @@ geologia <- local({
       )
     }
 
-    if (!file.exists(
+    if (!runtime_file_nonempty(
       FONDO_MAPA_GPKG
     )) {
       stop(
