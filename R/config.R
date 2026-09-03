@@ -115,7 +115,7 @@ FONDO_MAPA_GPKG <- file.path(
 
 LAYER_METADATA_XLSX <- file.path(
   DATA_DIR,
-  "metadata_normalizada.xlsx"
+  "Metadata_normalizada.xlsx"
 )
 
 
