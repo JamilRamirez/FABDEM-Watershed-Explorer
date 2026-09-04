@@ -182,7 +182,7 @@ runtime_asset_path <- function(relative_path) {
   }
 
 
-  runtime_cache_file(candidate_norm)
+  candidate_norm
 }
 
 
@@ -696,23 +696,22 @@ validate_stripe_sequence <- function(
   }
 
 
-  missing_files <- rows[["LOCAL_PATH"]][
-    !vapply(
-      rows[["LOCAL_PATH"]],
-      file_nonempty,
-      logical(1)
-    )
-  ]
+  local_paths <- as.character(
+    rows[["LOCAL_PATH"]]
+  )
 
 
-  if (length(missing_files) > 0L) {
+  if (
+    length(local_paths) != expected_n ||
+    anyNA(local_paths) ||
+    any(!nzchar(local_paths))
+  ) {
     stop(
       paste0(
         block_id,
-        ": faltan archivos ",
+        ": rutas locales invalidas en ",
         label,
-        " locales. Primero:\n",
-        missing_files[1]
+        "."
       )
     )
   }
@@ -851,6 +850,11 @@ load_stream_stripe <- function(
   path <- cache$rows[["LOCAL_PATH"]][
     stripe_id
   ]
+
+
+  path <- runtime_cache_file(
+    path
+  )
 
 
   if (!file_nonempty(path)) {
@@ -1622,10 +1626,15 @@ load_reverse_stripe <- function(
   }
 
 
-  r <- terra::rast(
-    cache$stripe_files[
+  stripe_path <- runtime_cache_file(
+    cache$stripe_files[[
       stripe_id
-    ]
+    ]]
+  )
+
+
+  r <- terra::rast(
+    stripe_path
   )
 
 
