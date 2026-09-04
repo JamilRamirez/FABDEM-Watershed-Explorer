@@ -216,6 +216,65 @@ dir.create(
 )
 
 
+runtime_is_lfs_pointer <- function(path) {
+  if (
+    length(path) != 1L ||
+    is.na(path) ||
+    !nzchar(path) ||
+    !file.exists(path)
+  ) {
+    return(FALSE)
+  }
+
+  size <- suppressWarnings(
+    as.numeric(file.info(path)$size)
+  )
+
+  if (!is.finite(size) || size <= 0 || size > 2048) {
+    return(FALSE)
+  }
+
+  con <- file(path, open = "rb")
+  on.exit(close(con), add = TRUE)
+
+  prefix_raw <- readBin(
+    con,
+    what = "raw",
+    n = min(512L, as.integer(size))
+  )
+
+  prefix <- tryCatch(
+    rawToChar(prefix_raw),
+    error = function(e) ""
+  )
+
+  startsWith(
+    prefix,
+    "version https://git-lfs.github.com/spec/v1"
+  )
+}
+
+
+runtime_raw_base_url <- function() {
+  base <- RUNTIME_BASE_URL
+
+  pattern <- paste0(
+    "^https://media\\.githubusercontent\\.com/media/",
+    "([^/]+)/([^/]+)/(.*)$"
+  )
+
+  if (!grepl(pattern, base)) {
+    return(NULL)
+  }
+
+  sub(
+    pattern,
+    "https://raw.githubusercontent.com/\\1/\\2/\\3",
+    base
+  )
+}
+
+
 runtime_cache_file <- function(path) {
   if (
     length(path) != 1L ||
@@ -246,16 +305,44 @@ runtime_cache_file <- function(path) {
   if (
     file.exists(candidate) &&
     is.finite(file.info(candidate)$size) &&
-    file.info(candidate)$size > 0
+    file.info(candidate)$size > 0 &&
+    !runtime_is_lfs_pointer(candidate)
   ) {
     return(candidate)
   }
 
+  # Elimina cualquier puntero LFS que hubiera quedado de un
+  # intento anterior para no tratarlo como un recurso valido.
+  if (file.exists(candidate)) {
+    unlink(candidate, force = TRUE)
+  }
+
   relative_path <- substring(candidate, nchar(root) + 2L)
-  remote_url <- paste0(
+  encoded_path <- utils::URLencode(relative_path)
+
+  primary_url <- paste0(
     RUNTIME_BASE_URL,
-    utils::URLencode(relative_path)
+    encoded_path
   )
+
+  raw_base <- runtime_raw_base_url()
+
+  urls <- primary_url
+
+  if (
+    length(raw_base) == 1L &&
+    !is.na(raw_base) &&
+    nzchar(raw_base)
+  ) {
+    raw_url <- paste0(
+      raw_base,
+      encoded_path
+    )
+
+    if (!identical(raw_url, primary_url)) {
+      urls <- c(urls, raw_url)
+    }
+  }
 
   dir.create(
     dirname(candidate),
@@ -266,41 +353,87 @@ runtime_cache_file <- function(path) {
   partial <- paste0(candidate, ".part")
   unlink(partial, force = TRUE)
 
-  status <- tryCatch(
-    utils::download.file(
-      remote_url,
-      partial,
-      mode = "wb",
-      quiet = TRUE
-    ),
-    error = function(e) {
-      stop(
-        paste0(
-          "No se pudo descargar el recurso Runtime:\n",
-          remote_url,
-          "\n\n",
-          conditionMessage(e)
+  errors <- character(0)
+
+  for (remote_url in urls) {
+    unlink(partial, force = TRUE)
+
+    status <- tryCatch(
+      utils::download.file(
+        remote_url,
+        partial,
+        mode = "wb",
+        quiet = TRUE
+      ),
+      error = function(e) {
+        errors <<- c(
+          errors,
+          paste0(
+            remote_url,
+            " -> ",
+            conditionMessage(e)
+          )
         )
-      )
+        NA_integer_
+      }
+    )
+
+    valid_download <- (
+      identical(status, 0L) &&
+      file.exists(partial) &&
+      is.finite(file.info(partial)$size) &&
+      file.info(partial)$size > 0
+    )
+
+    if (!isTRUE(valid_download)) {
+      if (!is.na(status)) {
+        errors <- c(
+          errors,
+          paste0(remote_url, " -> descarga incompleta")
+        )
+      }
+      next
     }
+
+    # raw.githubusercontent devuelve el puntero de Git LFS para
+    # binarios LFS. Eso NO es un archivo utilizable y nunca debe
+    # guardarse en el cache. El endpoint media es el que entrega
+    # el contenido LFS real.
+    if (runtime_is_lfs_pointer(partial)) {
+      errors <- c(
+        errors,
+        paste0(remote_url, " -> puntero Git LFS, no contenido")
+      )
+      next
+    }
+
+    if (!file.rename(partial, candidate)) {
+      errors <- c(
+        errors,
+        paste0(remote_url, " -> no se pudo guardar en cache")
+      )
+      next
+    }
+
+    return(candidate)
+  }
+
+  unlink(partial, force = TRUE)
+
+  stop(
+    paste0(
+      "No se pudo descargar el recurso Runtime:\n",
+      relative_path,
+      if (length(errors) > 0L) {
+        paste0(
+          "\n\nIntentos:\n",
+          paste(errors, collapse = "\n")
+        )
+      } else {
+        ""
+      }
+    )
   )
-
-  if (
-    !identical(status, 0L) ||
-    !file.exists(partial) ||
-    !is.finite(file.info(partial)$size) ||
-    file.info(partial)$size <= 0
-  ) {
-    unlink(partial, force = TRUE)
-    stop(paste0("Descarga Runtime incompleta:\n", remote_url))
-  }
-
-  if (!file.rename(partial, candidate)) {
-    unlink(partial, force = TRUE)
-    stop(paste0("No se pudo guardar el recurso Runtime:\n", candidate))
-  }
-
-  candidate
 }
 
 

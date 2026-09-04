@@ -357,40 +357,40 @@ geomorfologia <- local({
 
 
   geomorphology_index <- function() {
-    tiled_dir <- geomorphology_tiled_dir()
     index_file <- file.path(
-      tiled_dir,
+      geomorphology_tiled_dir(),
       "index.gpkg"
     )
-    ready_file <- file.path(
-      tiled_dir,
-      "TILING_READY.txt"
-    )
 
-    if (
-      file_nonempty_local(index_file) &&
-      file_nonempty_local(ready_file)
-    ) {
-      idx <- sf::st_read(
-        index_file,
-        layer = "tiles",
-        quiet = TRUE
-      )
-
-      if (!"RELATIVE_PATH" %in% names(idx)) {
+    index_file <- tryCatch(
+      runtime_cache_file(index_file),
+      error = function(e) {
         stop(
-          "El index.gpkg de Geomorfología no contiene RELATIVE_PATH."
+          paste0(
+            "No se pudo cargar el índice teselado de Geomorfología.\n",
+            conditionMessage(e)
+          )
         )
       }
+    )
 
-      return(idx)
+    idx <- sf::st_read(
+      index_file,
+      layer = "tiles",
+      quiet = TRUE
+    )
+
+    if (!"RELATIVE_PATH" %in% names(idx)) {
+      stop(
+        "El index.gpkg de Geomorfología no contiene RELATIVE_PATH."
+      )
     }
 
-    NULL
+    idx
   }
 
 
-  read_geomorphology_for_basin <- function(basin) {
+read_geomorphology_for_basin <- function(basin) {
     basin <- sf::st_make_valid(basin)
     basin <- basin[
       !sf::st_is_empty(basin),
@@ -437,6 +437,25 @@ geomorfologia <- local({
           idx_hit$RELATIVE_PATH
         ),
         safe_layers_path,
+        character(1)
+      )
+
+
+      selected_tiles <- vapply(
+        selected_tiles,
+        function(tile_path) {
+          tryCatch(
+            runtime_cache_file(tile_path),
+            error = function(e) {
+              stop(
+                paste0(
+                  "No se pudo descargar una tesela de Geomorfología.\n",
+                  conditionMessage(e)
+                )
+              )
+            }
+          )
+        },
         character(1)
       )
 
