@@ -1,0 +1,33 @@
+name: Patch morphometry legend width
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/patch-morph-legend.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply legend patch
+        run: python .github/scripts/patch_morph_legend.py
+      - name: Validate patch
+        run: |
+          git diff --check
+          grep -n "0.735\|0.755\|Cauce principal (contorno)" R/morfometria.R
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add R/morfometria.R
+          if ! git diff --cached --quiet; then
+            git commit -m "Widen morphometry map legend column"
+            git push origin main
+          fi
