@@ -10222,6 +10222,85 @@ morfometria <- local({
           ux <- usr[2] - usr[1]
           uy <- usr[4] - usr[3]
 
+
+          # --------------------------------------------------
+          # CRS metrico para el scoring de elementos cartograficos.
+          # El scoring se lleva al UTM de la cuenca para evitar
+          # distancias geograficas que dependan de lwgeom y para
+          # mantener la normalizacion enteramente en metros.
+          # --------------------------------------------------
+
+          score_epsg <- suppressWarnings(
+            as.integer(
+              x$geom$epsg
+            )
+          )
+
+          if (
+            length(score_epsg) != 1L ||
+            is.na(score_epsg) ||
+            !is.finite(score_epsg)
+          ) {
+            stop(
+              "No se pudo determinar el CRS UTM para posicionar los elementos cartograficos."
+            )
+          }
+
+          score_crs <- sf::st_crs(
+            score_epsg
+          )
+
+          basin_score <- sf::st_transform(
+            sf::st_make_valid(
+              basin_plot
+            ),
+            score_crs
+          )
+
+          basin_score_geom <- sf::st_union(
+            sf::st_geometry(
+              basin_score
+            )
+          )
+
+          map_corners <- sf::st_as_sf(
+            data.frame(
+              X = c(
+                usr[1],
+                usr[2]
+              ),
+              Y = c(
+                usr[3],
+                usr[4]
+              )
+            ),
+            coords = c(
+              "X",
+              "Y"
+            ),
+            crs = dem_crs
+          )
+
+          map_corners <- sf::st_transform(
+            map_corners,
+            score_crs
+          )
+
+          map_corners_xy <- sf::st_coordinates(
+            map_corners
+          )
+
+          map_diag_m <- sqrt(
+            (
+              map_corners_xy[2, "X"] -
+                map_corners_xy[1, "X"]
+            )^2 +
+              (
+                map_corners_xy[2, "Y"] -
+                  map_corners_xy[1, "Y"]
+              )^2
+          )
+
           point_in_box <- function(
               xy,
               box
@@ -10312,10 +10391,15 @@ morfometria <- local({
               crs = dem_crs
             )
 
+            pts <- sf::st_transform(
+              pts,
+              score_crs
+            )
+
             inside <- lengths(
               sf::st_intersects(
                 pts,
-                basin_plot
+                basin_score_geom
               )
             ) > 0L
 
@@ -10464,37 +10548,32 @@ morfometria <- local({
               crs = dem_crs
             )
 
-            basin_geom <- sf::st_union(
-              sf::st_geometry(
-                basin_plot
-              )
+            box_score <- sf::st_transform(
+              box_sf,
+              score_crs
             )
 
-            d <- suppressWarnings(
+            d_m <- suppressWarnings(
               as.numeric(
                 sf::st_distance(
-                  box_sf,
-                  basin_geom
+                  box_score,
+                  basin_score_geom
                 )[1]
               )
             )
 
-            map_diag <- sqrt(
-              ux^2 + uy^2
-            )
-
             if (
-              !is.finite(d) ||
-              !is.finite(map_diag) ||
-              map_diag <= 0
+              !is.finite(d_m) ||
+              !is.finite(map_diag_m) ||
+              map_diag_m <= 0
             ) {
               return(0)
             }
 
             pmin(
               1,
-              d / (
-                0.12 * map_diag
+              d_m / (
+                0.12 * map_diag_m
               )
             )
           }
