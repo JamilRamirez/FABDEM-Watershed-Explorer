@@ -785,7 +785,7 @@ morfometria <- local({
     graphics::par(
       fig = c(
         0.025,
-        0.79,
+        0.735,
         0.07,
         0.97
       ),
@@ -9238,7 +9238,7 @@ morfometria <- local({
           graphics::par(
             fig = c(
               0.025,
-              0.79,
+              0.735,
               0.07,
               0.97
             ),
@@ -10989,7 +10989,7 @@ morfometria <- local({
 
           graphics::par(
             fig = c(
-              0.81,
+              0.755,
               0.985,
               map_plot_bottom + 0.57 * map_plot_height,
               map_plot_top
@@ -11132,7 +11132,7 @@ morfometria <- local({
 
           graphics::par(
             fig = c(
-              0.81,
+              0.755,
               0.985,
               map_plot_bottom,
               map_plot_bottom + 0.52 * map_plot_height
@@ -11189,7 +11189,7 @@ morfometria <- local({
           graphics::segments(
             0.04,
             0.84,
-            0.34,
+            0.29,
             0.84,
             col = "#08306B",
             lwd = 3.30,
@@ -11205,7 +11205,7 @@ morfometria <- local({
             lty = 1
           )
           graphics::text(
-            0.40,
+            0.35,
             0.84,
             labels = "Cauce principal (contorno)",
             adj = c(
