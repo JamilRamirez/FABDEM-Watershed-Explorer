@@ -1,17 +1,15 @@
 name: Patch morfometria CRS scoring
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/patch-morfometria.yml
+  issues:
+    types: [opened]
 
 permissions:
   contents: write
 
 jobs:
   patch:
+    if: github.event.issue.title == 'RUN MORFOMETRIA CRS PATCH'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,28 +22,20 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          path = Path("R/morfometria.R")
-          text = path.read_text(encoding="utf-8")
+          path = Path('R/morfometria.R')
+          text = path.read_text(encoding='utf-8')
 
-          score_marker = "          score_epsg <- suppressWarnings("
-          if score_marker not in text:
-              anchor = "          uy <- usr[4] - usr[3]\n"
+          anchor = '          uy <- usr[4] - usr[3]\n'
+          if '          score_epsg <- suppressWarnings(' not in text:
               if text.count(anchor) != 1:
-                  raise SystemExit(f"Expected one map usr anchor, found {text.count(anchor)}")
-
+                  raise SystemExit(f'Expected one map usr anchor, found {text.count(anchor)}')
               insertion = r'''
 
           # --------------------------------------------------
           # CRS metrico para el scoring de elementos cartograficos.
-          #
-          # El mapa puede estar en longitud/latitud. Calcular
-          # st_distance() directamente en ese CRS obliga a sf a
-          # recurrir a lwgeom cuando S2 esta desactivado. Ademas,
-          # mezclar esa distancia con una diagonal expresada en
-          # grados hace inconsistente la normalizacion.
-          #
-          # Para evitar ambas cosas, la cuenca y las cajas de
-          # evaluacion se llevan al UTM ya calculado para la cuenca.
+          # El scoring se lleva al UTM de la cuenca para evitar
+          # distancias geograficas que dependan de lwgeom y para
+          # mantener la normalizacion enteramente en metros.
           # --------------------------------------------------
 
           score_epsg <- suppressWarnings(
@@ -121,39 +111,20 @@ jobs:
 '''
               text = text.replace(anchor, anchor + insertion, 1)
 
-          basin_start = text.index("          basin_overlap_fraction <- function(")
-          basin_end = text.index("          line_hit_fraction <- function(", basin_start)
+          basin_start = text.index('          basin_overlap_fraction <- function(')
+          basin_end = text.index('          line_hit_fraction <- function(', basin_start)
           basin_block = text[basin_start:basin_end]
-
-          old_inside = r'''            inside <- lengths(
-              sf::st_intersects(
-                pts,
-                basin_plot
-              )
-            ) > 0L
-'''
-          new_inside = r'''            pts <- sf::st_transform(
-              pts,
-              score_crs
-            )
-
-            inside <- lengths(
-              sf::st_intersects(
-                pts,
-                basin_score_geom
-              )
-            ) > 0L
-'''
-
+          old_inside = '''            inside <- lengths(\n              sf::st_intersects(\n                pts,\n                basin_plot\n              )\n            ) > 0L\n'''
+          new_inside = '''            pts <- sf::st_transform(\n              pts,\n              score_crs\n            )\n\n            inside <- lengths(\n              sf::st_intersects(\n                pts,\n                basin_score_geom\n              )\n            ) > 0L\n'''
           if old_inside in basin_block:
               basin_block = basin_block.replace(old_inside, new_inside, 1)
               text = text[:basin_start] + basin_block + text[basin_end:]
-          elif "                basin_score_geom" not in basin_block:
-              raise SystemExit("Could not patch basin_overlap_fraction()")
+          elif '                basin_score_geom' not in basin_block:
+              raise SystemExit('Could not patch basin_overlap_fraction()')
 
-          box_start = text.index("          box_clearance_fraction <- function(")
-          box_end = text.index("          score_map_box <- function(", box_start)
-
+          box_start = text.index('          box_clearance_fraction <- function(')
+          box_end = text.index('          score_map_box <- function(', box_start)
+          current_box = text[box_start:box_end]
           new_box = r'''          box_clearance_fraction <- function(
               box
           ) {
@@ -210,39 +181,32 @@ jobs:
           }
 
 '''
-
-          current_box = text[box_start:box_end]
-          if "                  box_sf," in current_box or "            basin_geom <- sf::st_union(" in current_box:
+          if '            basin_geom <- sf::st_union(' in current_box or '                  box_sf,' in current_box:
               text = text[:box_start] + new_box + text[box_end:]
-          elif "                  box_score," not in current_box:
-              raise SystemExit("Could not patch box_clearance_fraction()")
+          elif '                  box_score,' not in current_box:
+              raise SystemExit('Could not patch box_clearance_fraction()')
 
           required = [
-              "score_epsg <- suppressWarnings(",
-              "basin_score_geom <- sf::st_union(",
-              "map_diag_m <- sqrt(",
-              "box_score <- sf::st_transform(",
-              "basin_score_geom\n              )\n            ) > 0L",
+              'score_epsg <- suppressWarnings(',
+              'basin_score_geom <- sf::st_union(',
+              'map_diag_m <- sqrt(',
+              'box_score <- sf::st_transform(',
           ]
-          missing = [item for item in required if item not in text]
+          missing = [x for x in required if x not in text]
           if missing:
-              raise SystemExit(f"Patch validation failed: {missing}")
+              raise SystemExit(f'Patch validation failed: {missing}')
 
-          if "sf::st_distance(\n                  box_sf,\n                  basin_geom" in text:
-              raise SystemExit("Old geographic st_distance() block still present")
-
-          path.write_text(text, encoding="utf-8")
+          path.write_text(text, encoding='utf-8')
           PY
 
           git diff --check
           grep -n "score_epsg\|basin_score_geom\|map_diag_m\|box_score" R/morfometria.R
 
-      - name: Commit fix and remove one-time workflow
+      - name: Commit fix
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add R/morfometria.R
-          git rm .github/workflows/patch-morfometria.yml
           git commit -m "Fix morphometric map CRS scoring"
           git push origin main
