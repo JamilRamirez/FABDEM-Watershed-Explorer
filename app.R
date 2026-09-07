@@ -235,6 +235,9 @@ ui <- tagList(
       rel = "stylesheet",
       type = "text/css",
       href = "fabdem.css"
+    ),
+    tags$script(
+      src = "morfometria_layout.js"
     )
   ),
 
