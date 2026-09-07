@@ -441,6 +441,60 @@ poblados <- local({
   # 3. PUNTO EN POLIGONO
   # ==========================================================
 
+  dominant_territory <- function(x) {
+    values <- x[
+      !is.na(x) &
+        nzchar(x)
+    ]
+
+    if (length(values) == 0L) {
+      return(
+        list(
+          name = NA_character_,
+          count = 0L
+        )
+      )
+    }
+
+    counts <- sort(
+      table(values),
+      decreasing = TRUE
+    )
+
+    max_count <- as.integer(
+      counts[1L]
+    )
+
+    winners <- sort(
+      names(
+        counts[
+          counts == max_count
+        ]
+      )
+    )
+
+    label <- if (length(winners) <= 2L) {
+      paste(
+        winners,
+        collapse = " / "
+      )
+    } else {
+      paste0(
+        winners[1L],
+        " / ",
+        winners[2L],
+        " +",
+        length(winners) - 2L
+      )
+    }
+
+    list(
+      name = label,
+      count = max_count
+    )
+  }
+
+
   build_poblados_result <- function(basin) {
     points <- read_poblados_source()
 
@@ -495,6 +549,12 @@ poblados <- local({
           n_departments = 0L,
           concentration_district = NA_character_,
           concentration_count = 0L,
+          dominant_department = NA_character_,
+          dominant_department_count = 0L,
+          dominant_province = NA_character_,
+          dominant_province_count = 0L,
+          dominant_district = NA_character_,
+          dominant_district_count = 0L,
           epsg = basin_utm_epsg(
             basin
           )
@@ -613,6 +673,18 @@ poblados <- local({
       0L
     }
 
+    dominant_department <- dominant_territory(
+      hit$DEP
+    )
+
+    dominant_province <- dominant_territory(
+      hit$PROV
+    )
+
+    dominant_district <- dominant_territory(
+      hit$DIST
+    )
+
     list(
       points = hit,
       table = tab,
@@ -642,6 +714,12 @@ poblados <- local({
       ),
       concentration_district = concentration_district,
       concentration_count = concentration_count,
+      dominant_department = dominant_department$name,
+      dominant_department_count = dominant_department$count,
+      dominant_province = dominant_province$name,
+      dominant_province_count = dominant_province$count,
+      dominant_district = dominant_district$name,
+      dominant_district_count = dominant_district$count,
       epsg = basin_utm_epsg(
         basin
       )
@@ -2127,7 +2205,7 @@ poblados <- local({
     graphics::text(
       0.04,
       0.565,
-      labels = "Concentración",
+      labels = "Concentración territorial",
       adj = c(
         0,
         1
@@ -2136,41 +2214,82 @@ poblados <- local({
       cex = 0.76
     )
 
-    if (
-      !is.na(
-        x$concentration_district
-      )
+    draw_dominant_level <- function(
+        y,
+        label,
+        name,
+        count
     ) {
-      info_lines <- c(
-        x$concentration_district,
-        paste0(
-          x$concentration_count,
-          " centros poblados"
-        )
+      graphics::text(
+        0.04,
+        y,
+        labels = label,
+        adj = c(
+          0,
+          1
+        ),
+        font = 2,
+        cex = 0.60,
+        col = "grey30"
       )
-    } else {
-      info_lines <- c(
-        "Sin distrito nominal",
-        "0 centros poblados"
+
+      value_name <- if (
+        length(name) == 1L &&
+        !is.na(name) &&
+        nzchar(name)
+      ) {
+        name
+      } else {
+        "Sin dato nominal"
+      }
+
+      graphics::text(
+        0.04,
+        y - 0.038,
+        labels = value_name,
+        adj = c(
+          0,
+          1
+        ),
+        cex = 0.66,
+        col = "grey20"
+      )
+
+      graphics::text(
+        0.04,
+        y - 0.072,
+        labels = paste0(
+          as.integer(count),
+          " centros poblados"
+        ),
+        adj = c(
+          0,
+          1
+        ),
+        cex = 0.59,
+        col = "grey45"
       )
     }
 
-    graphics::text(
-      rep(
-        0.04,
-        length(info_lines)
-      ),
-      c(
-        0.525,
-        0.487
-      ),
-      labels = info_lines,
-      adj = c(
-        0,
-        1
-      ),
-      cex = 0.64,
-      col = "grey25"
+    draw_dominant_level(
+      0.515,
+      "Departamento",
+      x$dominant_department,
+      x$dominant_department_count
+    )
+
+    draw_dominant_level(
+      0.395,
+      "Provincia",
+      x$dominant_province,
+      x$dominant_province_count
+    )
+
+    draw_dominant_level(
+      0.275,
+      "Distrito",
+      x$dominant_district,
+      x$dominant_district_count
     )
 
     graphics::par(
