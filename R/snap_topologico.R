@@ -24,6 +24,54 @@ SNAP_D8_CORRECTION_MAX_M <- 90
 SNAP_D8_CORRECTION_MIN_FRACTION <- 0.70
 
 
+new_snap_reverse_cache <- function(block_id) {
+
+  meta <- get_block_metadata(
+    block_id
+  )
+
+  reverse_rows <- get_block_assets(
+    block_id,
+    "reverse"
+  )
+
+
+  e <- new.env(
+    parent = emptyenv()
+  )
+
+  e$block_id <- block_id
+
+  e$metadata <- list(
+    nrows = as.double(meta[["NROWS"]][1]),
+    ncols = as.double(meta[["NCOLS"]][1]),
+    stripe_rows = as.double(meta[["STRIPE_ROWS"]][1]),
+    n_stripes = as.integer(meta[["N_STRIPES"]][1])
+  )
+
+  e$stripe_files <- as.character(
+    reverse_rows[["LOCAL_PATH"]]
+  )
+
+  e$values <- new.env(
+    hash = TRUE,
+    parent = emptyenv()
+  )
+
+  e$lru <- character(0)
+  e$fast_mode <- FALSE
+  e$fast_preloaded <- FALSE
+  e$edge_safe <- FALSE
+  e$fast_objects <- NULL
+  e$fast_files <- NULL
+  e$fast_manifest <- NULL
+  e$full_raw <- NULL
+  e$full_raw_ready <- FALSE
+
+  e
+}
+
+
 count_upstream_until_threshold <- function(
     cache,
     outlet_cell,
@@ -397,7 +445,7 @@ build_snap_result <- function(
     outlet_cell,
     grid_template,
     grid_crs,
-    stream_value,
+    actual_stream_value,
     mode,
     diagnosis,
     threshold_cells,
@@ -461,6 +509,20 @@ build_snap_result <- function(
   }
 
 
+  # delimitacion.R historicamente usa stream_mask_value > 0 como
+  # guardia. Desde esta version la validez se determina por area
+  # D8, no necesariamente por STREAM_MASK. Se mantiene 1 como
+  # bandera de compatibilidad y se conserva el valor real aparte.
+  compatibility_stream_value <- if (
+    is.finite(actual_stream_value) &&
+    actual_stream_value > 0
+  ) {
+    as.numeric(actual_stream_value)
+  } else {
+    1
+  }
+
+
   list(
     clicked_lon = lon,
     clicked_lat = lat,
@@ -471,7 +533,8 @@ build_snap_result <- function(
     outlet_lat = outlet_wgs_xy[2],
     snap_mode = mode,
     snap_distance_m = snap_distance_m,
-    stream_mask_value = as.numeric(stream_value),
+    stream_mask_value = compatibility_stream_value,
+    actual_stream_mask_value = as.numeric(actual_stream_value),
     hydrologic_valid = isTRUE(diagnosis$reaches_threshold),
     diagnostic_n_cells = as.numeric(diagnosis$n_cells),
     diagnostic_area_km2 = area_est_km2,
@@ -486,19 +549,28 @@ snap_to_stream_stripes <- function(
     radius_m,
     grid_template,
     stream_cache,
-    reverse_cache,
     stripe_rows,
-    n_stripes,
-    threshold_cells,
-    threshold_km2
+    n_stripes
 ) {
 
-  threshold_cells <- as.double(
-    threshold_cells
+  block_id <- as.character(
+    stream_cache$block_id
   )
 
-  threshold_km2 <- as.numeric(
-    threshold_km2
+  meta <- get_block_metadata(
+    block_id
+  )
+
+  threshold_cells <- suppressWarnings(
+    as.double(
+      meta[["STREAM_THRESHOLD_CELLS"]][1]
+    )
+  )
+
+  threshold_km2 <- suppressWarnings(
+    as.numeric(
+      meta[["STREAM_THRESHOLD_KM2"]][1]
+    )
   )
 
 
@@ -512,6 +584,11 @@ snap_to_stream_stripes <- function(
       "El bloque no contiene un umbral hidrologico valido."
     )
   }
+
+
+  reverse_cache <- new_snap_reverse_cache(
+    block_id
+  )
 
 
   grid_crs <- sf::st_crs(
@@ -591,7 +668,7 @@ snap_to_stream_stripes <- function(
         outlet_cell = click_cell,
         grid_template = grid_template,
         grid_crs = grid_crs,
-        stream_value = click_stream_value,
+        actual_stream_value = click_stream_value,
         mode = "CLICK_CELL_D8_VALID",
         diagnosis = diagnosis,
         threshold_cells = threshold_cells,
@@ -702,7 +779,7 @@ snap_to_stream_stripes <- function(
             outlet_cell = next_cell,
             grid_template = grid_template,
             grid_crs = grid_crs,
-            stream_value = next_stream_value,
+            actual_stream_value = next_stream_value,
             mode = "D8_LOCAL_CORRECTION",
             diagnosis = next_diagnosis,
             threshold_cells = threshold_cells,
