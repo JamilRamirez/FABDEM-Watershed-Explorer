@@ -89,6 +89,13 @@ source(
   chdir = FALSE
 )
 
+source(
+  file.path("R", "snap_topologico.R"),
+  local = TRUE,
+  encoding = "UTF-8",
+  chdir = FALSE
+)
+
 
 # 3. Modulos base
 source(
