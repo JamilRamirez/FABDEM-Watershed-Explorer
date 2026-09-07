@@ -1,93 +1,205 @@
 # ============================================================
 # R/snap_topologico.R
 #
-# SNAP LOCAL + TOPOLOGICO DEL PUNTO DE SALIDA
+# DIAGNOSTICO DEL OUTLET Y AJUSTE D8 LOCAL
 # ============================================================
 #
-# Objetivo:
-# - evitar saltos laterales a un cauce mayor cerca de confluencias;
-# - permitir cuencas pequenas aunque el punto no coincida con la
-#   mascara de cauces precomputada;
-# - usar REVERSE_D8 como referencia hidrologica principal.
+# Principio:
+# - el clic manda;
+# - primero se evalua la celda D8 exacta bajo el clic;
+# - si su area aportante alcanza el minimo, NO se hace snap;
+# - si no alcanza el minimo, se informa el area estimada;
+# - solo se permite una correccion D8 muy corta cuando el punto
+#   ya esta cerca del umbral, para corregir uno o pocos pixeles;
+# - nunca se busca el cauce de mayor acumulacion ni el cauce mas
+#   cercano dentro de un buffer grande.
 #
-# Estrategia:
-# 1) si el clic cae sobre stream_stripes, se conserva;
-# 2) si la propia celda clicada ya tiene al menos el area minima
-#    de aporte, se usa directamente;
-# 3) en caso contrario se sigue SOLO la trayectoria D8 aguas abajo
-#    y se toma la primera celda que alcanza el umbral minimo;
-# 4) la busqueda topologica se limita localmente para no cruzar
-#    grandes distancias ni saltar de rama;
-# 5) como ultimo respaldo se permite el snap geometrico original,
-#    pero solo dentro de un radio local pequeno.
-#
-# helpers.R se carga antes de este archivo.
+# El diagnostico usa el mismo REVERSE_D8 del trazado final y el
+# mismo umbral del bloque, por lo que la decision es consistente
+# con la delimitacion posterior.
 # ============================================================
 
 
-snap_to_stream_stripes_nearest <- snap_to_stream_stripes
+SNAP_D8_CORRECTION_MAX_M <- 90
+SNAP_D8_CORRECTION_MIN_FRACTION <- 0.70
 
 
-SNAP_TOPOLOGY_MAX_M <- 300
-SNAP_LOCAL_FALLBACK_M <- 120
+count_upstream_until_threshold <- function(
+    cache,
+    outlet_cell,
+    threshold_cells
+) {
 
-
-new_snap_reverse_cache <- function(block_id) {
-
-  meta <- get_block_metadata(
-    block_id
+  threshold_cells <- as.double(
+    threshold_cells
   )
 
-  reverse_rows <- get_block_assets(
-    block_id,
-    "reverse"
-  )
-
-  e <- new.env(
-    parent = emptyenv()
-  )
-
-  e$block_id <- block_id
-
-  e$metadata <- list(
-    nrows = as.double(
-      meta[["NROWS"]][1]
-    ),
-    ncols = as.double(
-      meta[["NCOLS"]][1]
-    ),
-    stripe_rows = as.double(
-      meta[["STRIPE_ROWS"]][1]
-    ),
-    n_stripes = as.integer(
-      meta[["N_STRIPES"]][1]
+  if (
+    !is.finite(threshold_cells) ||
+    threshold_cells < 1
+  ) {
+    stop(
+      "Umbral de celdas invalido para diagnosticar el punto de salida."
     )
+  }
+
+
+  nc <- as.double(
+    cache$metadata$ncols
   )
 
-  e$stripe_files <- as.character(
-    reverse_rows[["LOCAL_PATH"]]
+  nr <- as.double(
+    cache$metadata$nrows
   )
 
-  e$values <- new.env(
-    hash = TRUE,
-    parent = emptyenv()
+  total_cells <- nc * nr
+
+
+  outlet_cell <- as.double(
+    outlet_cell
   )
 
-  e$lru <- character(0)
-  e$fast_mode <- FALSE
-  e$fast_preloaded <- FALSE
-  e$edge_safe <- FALSE
-  e$fast_objects <- NULL
-  e$fast_files <- NULL
-  e$fast_manifest <- NULL
-  e$full_raw <- NULL
-  e$full_raw_ready <- FALSE
+  if (
+    !is.finite(outlet_cell) ||
+    outlet_cell < 1 ||
+    outlet_cell > total_cells
+  ) {
+    stop(
+      "La celda del punto de salida quedo fuera de la grilla hidrologica."
+    )
+  }
 
-  e
+
+  frontier <- outlet_cell
+  n_cells <- 1
+  level <- 0L
+
+
+  repeat {
+
+    if (n_cells >= threshold_cells) {
+      return(
+        list(
+          reaches_threshold = TRUE,
+          n_cells = n_cells,
+          levels = level
+        )
+      )
+    }
+
+
+    if (length(frontier) == 0L) {
+      break
+    }
+
+
+    level <- level + 1L
+
+    if (level > MAX_TRACE_LEVELS) {
+      stop(
+        "Se alcanzo MAX_TRACE_LEVELS durante el diagnostico del outlet."
+      )
+    }
+
+
+    values_reverse <- get_reverse_values(
+      cache,
+      frontier
+    )
+
+
+    rows <- floor(
+      (
+        frontier - 1
+      ) /
+        nc
+    ) + 1
+
+    cols <- (
+      (
+        frontier - 1
+      ) %% nc
+    ) + 1
+
+
+    parents <- numeric(0)
+
+
+    use <- bitwAnd(values_reverse, 1L) != 0L & rows > 1 & cols > 1
+    if (any(use)) {
+      parents <- c(parents, frontier[use] - nc - 1)
+    }
+
+    use <- bitwAnd(values_reverse, 2L) != 0L & rows > 1
+    if (any(use)) {
+      parents <- c(parents, frontier[use] - nc)
+    }
+
+    use <- bitwAnd(values_reverse, 4L) != 0L & rows > 1 & cols < nc
+    if (any(use)) {
+      parents <- c(parents, frontier[use] - nc + 1)
+    }
+
+    use <- bitwAnd(values_reverse, 8L) != 0L & cols > 1
+    if (any(use)) {
+      parents <- c(parents, frontier[use] - 1)
+    }
+
+    use <- bitwAnd(values_reverse, 16L) != 0L & cols < nc
+    if (any(use)) {
+      parents <- c(parents, frontier[use] + 1)
+    }
+
+    use <- bitwAnd(values_reverse, 32L) != 0L & rows < nr & cols > 1
+    if (any(use)) {
+      parents <- c(parents, frontier[use] + nc - 1)
+    }
+
+    use <- bitwAnd(values_reverse, 64L) != 0L & rows < nr
+    if (any(use)) {
+      parents <- c(parents, frontier[use] + nc)
+    }
+
+    use <- bitwAnd(values_reverse, 128L) != 0L & rows < nr & cols < nc
+    if (any(use)) {
+      parents <- c(parents, frontier[use] + nc + 1)
+    }
+
+
+    if (length(parents) == 0L) {
+      break
+    }
+
+
+    parents <- unique(
+      parents
+    )
+
+    parents <- parents[
+      parents >= 1 &
+        parents <= total_cells
+    ]
+
+
+    if (length(parents) == 0L) {
+      break
+    }
+
+
+    n_cells <- n_cells + length(parents)
+    frontier <- parents
+  }
+
+
+  list(
+    reaches_threshold = n_cells >= threshold_cells,
+    n_cells = n_cells,
+    levels = level
+  )
 }
 
 
-snap_stream_value_at_cell <- function(
+stream_value_at_global_cell <- function(
     cell,
     grid_template,
     stream_cache,
@@ -104,8 +216,10 @@ snap_stream_value_at_cell <- function(
   row <- floor(
     (
       as.double(cell) - 1
-    ) / nc
+    ) /
+      nc
   ) + 1
+
 
   sid <- stripe_id_from_row(
     row = as.integer(row),
@@ -113,15 +227,18 @@ snap_stream_value_at_cell <- function(
     n_stripes = as.integer(n_stripes)
   )
 
+
   stream_r <- load_stream_stripe(
     stream_cache,
     sid
   )
 
+
   xy <- terra::xyFromCell(
     grid_template,
     as.double(cell)
   )
+
 
   extract_stream_value_at_xy(
     stream_r,
@@ -146,15 +263,24 @@ snap_downstream_cell <- function(
     reverse_cache$metadata$nrows
   )
 
-  cell <- as.double(cell)
+
+  cell <- as.double(
+    cell
+  )
 
   row <- floor(
-    (cell - 1) / nc
+    (
+      cell - 1
+    ) /
+      nc
   ) + 1
 
   col <- (
-    (cell - 1) %% nc
+    (
+      cell - 1
+    ) %% nc
   ) + 1
+
 
   offsets <- c(
     -nc - 1,
@@ -167,9 +293,6 @@ snap_downstream_cell <- function(
     nc + 1
   )
 
-  # En REVERSE_D8 cada receptor codifica de que posiciones
-  # vecinas recibe flujo. Para averiguar el receptor de la celda
-  # actual hay que consultar el bit opuesto en cada vecino.
   required_bits <- c(
     128L,
     64L,
@@ -192,12 +315,15 @@ snap_downstream_cell <- function(
     row < nr && col < nc
   )
 
+
   targets <- cell + offsets[valid]
   bits <- required_bits[valid]
+
 
   if (length(targets) == 0L) {
     return(NA_real_)
   }
+
 
   values_reverse <- get_reverse_values(
     reverse_cache,
@@ -211,9 +337,11 @@ snap_downstream_cell <- function(
     ) != 0L
   )
 
+
   if (length(hit) != 1L) {
     return(NA_real_)
   }
+
 
   as.double(
     targets[hit]
@@ -221,177 +349,9 @@ snap_downstream_cell <- function(
 }
 
 
-snap_upstream_reaches_threshold <- function(
-    reverse_cache,
-    outlet_cell,
-    threshold_cells
-) {
-
-  threshold_cells <- as.double(
-    threshold_cells
-  )
-
-  if (
-    !is.finite(threshold_cells) ||
-    threshold_cells <= 1
-  ) {
-    return(TRUE)
-  }
-
-  nc <- as.double(
-    reverse_cache$metadata$ncols
-  )
-
-  nr <- as.double(
-    reverse_cache$metadata$nrows
-  )
-
-  frontier <- as.double(
-    outlet_cell
-  )
-
-  n_cells <- 1
-  level <- 0L
-
-  repeat {
-
-    if (n_cells >= threshold_cells) {
-      return(TRUE)
-    }
-
-    if (length(frontier) == 0L) {
-      return(FALSE)
-    }
-
-    level <- level + 1L
-
-    if (level > MAX_TRACE_LEVELS) {
-      return(FALSE)
-    }
-
-    values_reverse <- get_reverse_values(
-      reverse_cache,
-      frontier
-    )
-
-    rows <- floor(
-      (frontier - 1) / nc
-    ) + 1
-
-    cols <- (
-      (frontier - 1) %% nc
-    ) + 1
-
-    parents <- numeric(0)
-
-    use <- (
-      bitwAnd(values_reverse, 1L) != 0L &
-        rows > 1 &
-        cols > 1
-    )
-    if (any(use)) {
-      parents <- c(
-        parents,
-        frontier[use] - nc - 1
-      )
-    }
-
-    use <- (
-      bitwAnd(values_reverse, 2L) != 0L &
-        rows > 1
-    )
-    if (any(use)) {
-      parents <- c(
-        parents,
-        frontier[use] - nc
-      )
-    }
-
-    use <- (
-      bitwAnd(values_reverse, 4L) != 0L &
-        rows > 1 &
-        cols < nc
-    )
-    if (any(use)) {
-      parents <- c(
-        parents,
-        frontier[use] - nc + 1
-      )
-    }
-
-    use <- (
-      bitwAnd(values_reverse, 8L) != 0L &
-        cols > 1
-    )
-    if (any(use)) {
-      parents <- c(
-        parents,
-        frontier[use] - 1
-      )
-    }
-
-    use <- (
-      bitwAnd(values_reverse, 16L) != 0L &
-        cols < nc
-    )
-    if (any(use)) {
-      parents <- c(
-        parents,
-        frontier[use] + 1
-      )
-    }
-
-    use <- (
-      bitwAnd(values_reverse, 32L) != 0L &
-        rows < nr &
-        cols > 1
-    )
-    if (any(use)) {
-      parents <- c(
-        parents,
-        frontier[use] + nc - 1
-      )
-    }
-
-    use <- (
-      bitwAnd(values_reverse, 64L) != 0L &
-        rows < nr
-    )
-    if (any(use)) {
-      parents <- c(
-        parents,
-        frontier[use] + nc
-      )
-    }
-
-    use <- (
-      bitwAnd(values_reverse, 128L) != 0L &
-        rows < nr &
-        cols < nc
-    )
-    if (any(use)) {
-      parents <- c(
-        parents,
-        frontier[use] + nc + 1
-      )
-    }
-
-    if (length(parents) == 0L) {
-      return(FALSE)
-    }
-
-    parents <- unique(
-      parents
-    )
-
-    n_cells <- n_cells + length(parents)
-    frontier <- parents
-  }
-}
-
-
-snap_cell_utm_xy <- function(
+cell_distance_from_click_m <- function(
     cell,
+    click_wgs,
     grid_template,
     grid_crs,
     epsg
@@ -402,7 +362,7 @@ snap_cell_utm_xy <- function(
     as.double(cell)
   )
 
-  p_grid <- sf::st_sfc(
+  cell_grid <- sf::st_sfc(
     sf::st_point(
       c(
         xy[1, 1],
@@ -412,27 +372,36 @@ snap_cell_utm_xy <- function(
     crs = grid_crs
   )
 
-  p_utm <- sf::st_transform(
-    p_grid,
+  click_utm <- sf::st_transform(
+    click_wgs,
+    epsg
+  )
+
+  cell_utm <- sf::st_transform(
+    cell_grid,
     epsg
   )
 
   as.numeric(
-    sf::st_coordinates(
-      p_utm
-    )[1, ]
+    sf::st_distance(
+      click_utm,
+      cell_utm
+    )
   )
 }
 
 
-snap_build_result <- function(
+build_snap_result <- function(
     lon,
     lat,
     outlet_cell,
     grid_template,
     grid_crs,
     stream_value,
-    mode
+    mode,
+    diagnosis,
+    threshold_cells,
+    threshold_km2
 ) {
 
   outlet_xy <- terra::xyFromCell(
@@ -459,6 +428,7 @@ snap_build_result <- function(
     outlet_wgs
   )[1, ]
 
+
   click_wgs <- sf::st_sfc(
     sf::st_point(
       c(
@@ -474,22 +444,22 @@ snap_build_result <- function(
     lat
   )
 
-  click_utm <- sf::st_transform(
-    click_wgs,
-    epsg
-  )
-
-  outlet_utm <- sf::st_transform(
-    outlet_wgs,
-    epsg
-  )
-
-  distance_final <- as.numeric(
+  snap_distance_m <- as.numeric(
     sf::st_distance(
-      click_utm,
-      outlet_utm
+      sf::st_transform(click_wgs, epsg),
+      sf::st_transform(outlet_wgs, epsg)
     )
   )
+
+
+  area_est_km2 <- if (isTRUE(diagnosis$reaches_threshold)) {
+    as.numeric(threshold_km2)
+  } else {
+    as.numeric(threshold_km2) *
+      as.numeric(diagnosis$n_cells) /
+      as.numeric(threshold_cells)
+  }
+
 
   list(
     clicked_lon = lon,
@@ -500,8 +470,12 @@ snap_build_result <- function(
     outlet_lon = outlet_wgs_xy[1],
     outlet_lat = outlet_wgs_xy[2],
     snap_mode = mode,
-    snap_distance_m = distance_final,
-    stream_mask_value = as.numeric(stream_value)
+    snap_distance_m = snap_distance_m,
+    stream_mask_value = as.numeric(stream_value),
+    hydrologic_valid = isTRUE(diagnosis$reaches_threshold),
+    diagnostic_n_cells = as.numeric(diagnosis$n_cells),
+    diagnostic_area_km2 = area_est_km2,
+    minimum_area_km2 = as.numeric(threshold_km2)
   )
 }
 
@@ -512,18 +486,33 @@ snap_to_stream_stripes <- function(
     radius_m,
     grid_template,
     stream_cache,
+    reverse_cache,
     stripe_rows,
-    n_stripes
+    n_stripes,
+    threshold_cells,
+    threshold_km2
 ) {
 
+  threshold_cells <- as.double(
+    threshold_cells
+  )
+
+  threshold_km2 <- as.numeric(
+    threshold_km2
+  )
+
+
   if (
-    !is.finite(radius_m) ||
-    radius_m <= 0
+    !is.finite(threshold_cells) ||
+    threshold_cells < 1 ||
+    !is.finite(threshold_km2) ||
+    threshold_km2 <= 0
   ) {
     stop(
-      "El radio interno de ajuste debe ser mayor que cero."
+      "El bloque no contiene un umbral hidrologico valido."
     )
   }
+
 
   grid_crs <- sf::st_crs(
     terra::crs(
@@ -536,6 +525,7 @@ snap_to_stream_stripes <- function(
       "La grilla del bloque no tiene CRS valido."
     )
   }
+
 
   click_wgs <- sf::st_sfc(
     sf::st_point(
@@ -556,6 +546,7 @@ snap_to_stream_stripes <- function(
     click_grid
   )[1, ]
 
+
   click_cell <- terra::cellFromXY(
     grid_template,
     matrix(
@@ -573,7 +564,15 @@ snap_to_stream_stripes <- function(
     )
   }
 
-  click_stream_value <- snap_stream_value_at_cell(
+
+  diagnosis <- count_upstream_until_threshold(
+    cache = reverse_cache,
+    outlet_cell = click_cell,
+    threshold_cells = threshold_cells
+  )
+
+
+  click_stream_value <- stream_value_at_global_cell(
     cell = click_cell,
     grid_template = grid_template,
     stream_cache = stream_cache,
@@ -581,261 +580,150 @@ snap_to_stream_stripes <- function(
     n_stripes = n_stripes
   )
 
-  if (
-    is.finite(click_stream_value) &&
-    click_stream_value > 0
-  ) {
+
+  # Caso principal: la celda exacta del clic ya es hidrologicamente valida.
+  # No se mueve el outlet, aunque la mascara de cauces no la marque.
+  if (isTRUE(diagnosis$reaches_threshold)) {
     return(
-      snap_build_result(
+      build_snap_result(
         lon = lon,
         lat = lat,
         outlet_cell = click_cell,
         grid_template = grid_template,
         grid_crs = grid_crs,
         stream_value = click_stream_value,
-        mode = "CLICK_ON_STREAM_CELL"
+        mode = "CLICK_CELL_D8_VALID",
+        diagnosis = diagnosis,
+        threshold_cells = threshold_cells,
+        threshold_km2 = threshold_km2
       )
     )
   }
 
-  block_id <- as.character(
-    stream_cache$block_id
-  )
 
-  meta <- get_block_metadata(
-    block_id
-  )
+  exact_area_km2 <- threshold_km2 *
+    as.numeric(diagnosis$n_cells) /
+    threshold_cells
 
-  threshold_cells <- suppressWarnings(
-    as.double(
-      meta[["STREAM_THRESHOLD_CELLS"]][1]
-    )
-  )
+
+  # Correccion extremadamente local. Solo se activa si el clic ya
+  # representa al menos 70% del umbral, evitando que una quebrada
+  # pequena salte a un rio grande en una confluencia cercana.
+  min_fraction_cells <- threshold_cells *
+    SNAP_D8_CORRECTION_MIN_FRACTION
+
 
   if (
-    !is.finite(threshold_cells) ||
-    threshold_cells < 1
-  ) {
-    stop(
-      "STREAM_THRESHOLD_CELLS invalido para el bloque."
-    )
-  }
-
-  reverse_cache <- new_snap_reverse_cache(
-    block_id
-  )
-
-  # La mascara de stream es auxiliar. Si el propio pixel clicado
-  # ya posee el aporte minimo, se acepta aunque la mascara no lo
-  # haya marcado exactamente.
-  if (
-    snap_upstream_reaches_threshold(
-      reverse_cache = reverse_cache,
-      outlet_cell = click_cell,
-      threshold_cells = threshold_cells
-    )
-  ) {
-    return(
-      snap_build_result(
-        lon = lon,
-        lat = lat,
-        outlet_cell = click_cell,
-        grid_template = grid_template,
-        grid_crs = grid_crs,
-        # Sentinel interno de validez hidrologica. La comprobacion
-        # definitiva vuelve a hacerse con trace$n_cells.
-        stream_value = 1,
-        mode = "CLICK_CELL_D8_VALIDATED"
-      )
-    )
-  }
-
-  epsg <- utm_epsg_point(
-    lon,
-    lat
-  )
-
-  click_utm <- sf::st_transform(
-    click_wgs,
-    epsg
-  )
-
-  click_utm_xy <- as.numeric(
-    sf::st_coordinates(
-      click_utm
-    )[1, ]
-  )
-
-  current <- as.double(
-    click_cell
-  )
-
-  current_utm_xy <- snap_cell_utm_xy(
-    cell = current,
-    grid_template = grid_template,
-    grid_crs = grid_crs,
-    epsg = epsg
-  )
-
-  travelled_m <- sqrt(
-    sum(
-      (current_utm_xy - click_utm_xy)^2
-    )
-  )
-
-  topology_limit_m <- min(
-    as.double(radius_m),
-    SNAP_TOPOLOGY_MAX_M
-  )
-
-  seen <- new.env(
-    hash = TRUE,
-    parent = emptyenv()
-  )
-
-  assign(
-    as.character(current),
-    TRUE,
-    envir = seen
-  )
-
-  step <- 0L
-
-  while (
-    step < 256L &&
-    travelled_m <= topology_limit_m
+    diagnosis$n_cells >= min_fraction_cells
   ) {
 
-    step <- step + 1L
-
-    next_cell <- snap_downstream_cell(
-      reverse_cache = reverse_cache,
-      cell = current
+    epsg <- utm_epsg_point(
+      lon,
+      lat
     )
 
-    if (!is.finite(next_cell)) {
-      break
-    }
-
-    key <- as.character(
-      next_cell
+    correction_limit_m <- min(
+      as.numeric(radius_m),
+      SNAP_D8_CORRECTION_MAX_M
     )
 
-    if (exists(
-      key,
-      envir = seen,
-      inherits = FALSE
-    )) {
-      break
-    }
-
-    assign(
-      key,
-      TRUE,
-      envir = seen
+    current <- as.double(
+      click_cell
     )
 
-    next_utm_xy <- snap_cell_utm_xy(
-      cell = next_cell,
-      grid_template = grid_template,
-      grid_crs = grid_crs,
-      epsg = epsg
-    )
+    seen <- current
+    step <- 0L
 
-    step_distance_m <- sqrt(
-      sum(
-        (next_utm_xy - current_utm_xy)^2
-      )
-    )
 
-    if (!is.finite(step_distance_m)) {
-      break
-    }
+    repeat {
 
-    travelled_m <- travelled_m + step_distance_m
+      step <- step + 1L
 
-    if (travelled_m > topology_limit_m) {
-      break
-    }
+      if (step > 12L) {
+        break
+      }
 
-    if (
-      snap_upstream_reaches_threshold(
+
+      next_cell <- snap_downstream_cell(
         reverse_cache = reverse_cache,
-        outlet_cell = next_cell,
-        threshold_cells = threshold_cells
-      )
-    ) {
-      stream_value <- snap_stream_value_at_cell(
-        cell = next_cell,
-        grid_template = grid_template,
-        stream_cache = stream_cache,
-        stripe_rows = stripe_rows,
-        n_stripes = n_stripes
+        cell = current
       )
 
       if (
-        !is.finite(stream_value) ||
-        stream_value <= 0
+        !is.finite(next_cell) ||
+        next_cell %in% seen
       ) {
-        stream_value <- 1
+        break
       }
 
-      return(
-        snap_build_result(
-          lon = lon,
-          lat = lat,
-          outlet_cell = next_cell,
-          grid_template = grid_template,
-          grid_crs = grid_crs,
-          stream_value = stream_value,
-          mode = "D8_LOCAL_THRESHOLD_VALIDATED"
-        )
+      seen <- c(
+        seen,
+        next_cell
       )
+
+
+      distance_m <- cell_distance_from_click_m(
+        cell = next_cell,
+        click_wgs = click_wgs,
+        grid_template = grid_template,
+        grid_crs = grid_crs,
+        epsg = epsg
+      )
+
+      if (
+        !is.finite(distance_m) ||
+        distance_m > correction_limit_m
+      ) {
+        break
+      }
+
+
+      next_diagnosis <- count_upstream_until_threshold(
+        cache = reverse_cache,
+        outlet_cell = next_cell,
+        threshold_cells = threshold_cells
+      )
+
+
+      if (isTRUE(next_diagnosis$reaches_threshold)) {
+
+        next_stream_value <- stream_value_at_global_cell(
+          cell = next_cell,
+          grid_template = grid_template,
+          stream_cache = stream_cache,
+          stripe_rows = stripe_rows,
+          n_stripes = n_stripes
+        )
+
+        return(
+          build_snap_result(
+            lon = lon,
+            lat = lat,
+            outlet_cell = next_cell,
+            grid_template = grid_template,
+            grid_crs = grid_crs,
+            stream_value = next_stream_value,
+            mode = "D8_LOCAL_CORRECTION",
+            diagnosis = next_diagnosis,
+            threshold_cells = threshold_cells,
+            threshold_km2 = threshold_km2
+          )
+        )
+      }
+
+
+      current <- next_cell
     }
-
-    current <- next_cell
-    current_utm_xy <- next_utm_xy
   }
 
-  # Respaldo geometrico muy local. A diferencia del comportamiento
-  # anterior, nunca se usa el radio completo de 1500 m para buscar
-  # lateralmente un cauce, porque eso favorecia saltos a ramas
-  # principales cerca de confluencias.
-  fallback_radius_m <- min(
-    as.double(radius_m),
-    SNAP_LOCAL_FALLBACK_M
-  )
-
-  fallback <- tryCatch(
-    snap_to_stream_stripes_nearest(
-      lon = lon,
-      lat = lat,
-      radius_m = fallback_radius_m,
-      grid_template = grid_template,
-      stream_cache = stream_cache,
-      stripe_rows = stripe_rows,
-      n_stripes = n_stripes
-    ),
-    error = function(e) NULL
-  )
-
-  if (!is.null(fallback)) {
-    fallback$snap_mode <- paste0(
-      "LOCAL_FALLBACK_",
-      fallback$snap_mode
-    )
-
-    return(fallback)
-  }
 
   stop(
     paste0(
-      "No se encontro un punto de salida hidrologicamente valido cerca del clic. ",
-      "El ajuste queda limitado a ",
-      round(topology_limit_m),
-      " m sobre la trayectoria D8 y ",
-      round(fallback_radius_m),
-      " m de busqueda lateral para evitar saltar a otra quebrada."
+      "Area aportante estimada en el punto: ",
+      sprintf("%.2f", exact_area_km2),
+      " km2. El minimo actualmente soportado es ",
+      sprintf("%.2f", threshold_km2),
+      " km2. El punto seleccionado no alcanza el umbral de delimitacion."
     )
   )
 }
