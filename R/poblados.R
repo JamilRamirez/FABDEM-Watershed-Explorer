@@ -2630,6 +2630,12 @@ poblados <- local({
                     n_departments = info$n_departments,
                     concentration_district = info$concentration_district,
                     concentration_count = info$concentration_count,
+                    dominant_department = info$dominant_department,
+                    dominant_department_count = info$dominant_department_count,
+                    dominant_province = info$dominant_province,
+                    dominant_province_count = info$dominant_province_count,
+                    dominant_district = info$dominant_district,
+                    dominant_district_count = info$dominant_district_count,
                     epsg = info$epsg
                   )
                 )
