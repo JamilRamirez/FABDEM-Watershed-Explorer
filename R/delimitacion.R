@@ -1631,9 +1631,23 @@ delimitacion <- local({
       default = 0
     )
 
+    # Una confluencia solo puede crear opciones si involucra la
+    # trayectoria D8 del outlet que el snap estable selecciono.
+    # Esto evita falsos positivos por cruces/tributarios cercanos
+    # que no pertenecen a la interpretacion inmediata del clic.
+    primary_path <- ambiguity_downstream_path(
+      start_cell = primary$outlet_cell,
+      reverse_cache = reverse_cache,
+      grid_template = grid_template,
+      click_lon = lon,
+      click_lat = lat,
+      max_distance_m = 1600,
+      max_steps = 128L
+    )
+
     merge_limit_m <- min(
       AMBIGUITY_JUNCTION_MAX_M,
-      max(120, primary_distance + AMBIGUITY_JUNCTION_MARGIN_M)
+      max(90, primary_distance + AMBIGUITY_JUNCTION_MARGIN_M)
     )
 
     seed_radius_m <- min(600, merge_limit_m + 180)
@@ -1665,10 +1679,21 @@ delimitacion <- local({
       return(NULL)
     }
 
-    paths <- lapply(
-      seeds$cell,
-      function(cell) ambiguity_downstream_path(
-        start_cell = cell,
+    best <- NULL
+    best_score <- Inf
+
+    for (ii in seq_len(nrow(seeds))) {
+
+      seed_cell <- as.double(seeds$cell[ii])
+
+      # El propio outlet y otros puntos de su misma trayectoria no
+      # constituyen una segunda opcion.
+      if (seed_cell == as.double(primary$outlet_cell)) {
+        next
+      }
+
+      path_now <- ambiguity_downstream_path(
+        start_cell = seed_cell,
         reverse_cache = reverse_cache,
         grid_template = grid_template,
         click_lon = lon,
@@ -1676,49 +1701,59 @@ delimitacion <- local({
         max_distance_m = 1600,
         max_steps = 128L
       )
-    )
 
-    best <- NULL
-    best_score <- Inf
+      merge <- snap_ambiguity_first_merge(
+        primary_path$cells,
+        path_now$cells
+      )
 
-    for (ii in seq_len(length(paths) - 1L)) {
-      for (jj in seq.int(ii + 1L, length(paths))) {
+      if (
+        is.null(merge) ||
+        isTRUE(merge$same_lineage) ||
+        merge$index_a <= 1L ||
+        merge$index_b <= 1L
+      ) {
+        next
+      }
 
-        merge <- snap_ambiguity_first_merge(
-          paths[[ii]]$cells,
-          paths[[jj]]$cells
+      merge_distance <- primary_path$click_distance_m[merge$index_a]
+      candidate_distance <- as.numeric(seeds$distance_m[ii])
+
+      if (
+        !is.finite(merge_distance) ||
+        merge_distance > merge_limit_m ||
+        !is.finite(candidate_distance)
+      ) {
+        next
+      }
+
+      # Si el clic esta claramente sobre el cauce primario, un
+      # tributario mas lejano que desemboca cerca NO vuelve ambiguo
+      # el clic. La tolerancia crece con la incertidumbre del snap.
+      closeness_tolerance_m <- max(
+        45,
+        0.35 * max(primary_distance, candidate_distance)
+      )
+
+      if (
+        primary_distance < AMBIGUITY_WIDE_TRIGGER_M &&
+        abs(candidate_distance - primary_distance) > closeness_tolerance_m
+      ) {
+        next
+      }
+
+      score <- merge_distance +
+        0.20 * candidate_distance +
+        0.10 * abs(candidate_distance - primary_distance)
+
+      if (score < best_score) {
+        best_score <- score
+        best <- list(
+          path = path_now,
+          merge = merge,
+          candidate_distance_m = candidate_distance,
+          merge_distance_m = merge_distance
         )
-
-        if (
-          is.null(merge) ||
-          isTRUE(merge$same_lineage) ||
-          merge$index_a <= 1L ||
-          merge$index_b <= 1L
-        ) {
-          next
-        }
-
-        merge_distance <- paths[[ii]]$click_distance_m[merge$index_a]
-
-        if (
-          !is.finite(merge_distance) ||
-          merge_distance > merge_limit_m
-        ) {
-          next
-        }
-
-        score <- merge_distance +
-          0.10 * (seeds$distance_m[ii] + seeds$distance_m[jj])
-
-        if (score < best_score) {
-          best_score <- score
-          best <- list(
-            ii = ii,
-            jj = jj,
-            merge = merge,
-            merge_distance_m = merge_distance
-          )
-        }
       }
     }
 
@@ -1726,18 +1761,19 @@ delimitacion <- local({
       return(NULL)
     }
 
-    path_a <- paths[[best$ii]]
-    path_b <- paths[[best$jj]]
-
-    branch_a <- path_a$cells[best$merge$index_a - 1L]
-    branch_b <- path_b$cells[best$merge$index_b - 1L]
+    # Opcion 1: rama donde realmente cayo el snap principal,
+    # inmediatamente antes de la union.
+    branch_primary <- primary_path$cells[best$merge$index_a - 1L]
+    # Opcion 2: la otra rama, inmediatamente antes de la union.
+    branch_alternate <- best$path$cells[best$merge$index_b - 1L]
+    # Opcion 3: cauce combinado inmediatamente aguas abajo.
     downstream <- snap_downstream_cell(reverse_cache, best$merge$cell)
 
-    option_cells <- c(branch_a, branch_b)
-    roles <- c('Rama aguas arriba 1', 'Rama aguas arriba 2')
+    option_cells <- c(branch_primary, branch_alternate)
+    roles <- c('Rama seleccionada por el clic', 'Rama alternativa')
     modes <- c(
-      'AMBIGUOUS_CONFLUENCE_UPSTREAM',
-      'AMBIGUOUS_CONFLUENCE_UPSTREAM'
+      'AMBIGUOUS_CONFLUENCE_PRIMARY',
+      'AMBIGUOUS_CONFLUENCE_ALTERNATIVE'
     )
 
     if (is.finite(downstream)) {
@@ -1778,11 +1814,14 @@ delimitacion <- local({
 
     list(
       status = 'ambiguous',
-      reason = 'CONFLUENCE_D8_LOCAL',
+      reason = 'CONFLUENCE_D8_PRIMARY_PATH',
       merge_distance_m = best$merge_distance_m,
+      primary_distance_m = primary_distance,
+      alternative_distance_m = best$candidate_distance_m,
       options = head(options, AMBIGUITY_MAX_OPTIONS)
     )
   }
+
 
 
   ambiguity_wide_multichannel <- function(
@@ -2086,9 +2125,35 @@ delimitacion <- local({
       )
     }
 
-    # Solo despues de resolver el snap principal se busca una
-    # confluencia ligada a SU entorno. Esto elimina falsos positivos
-    # provocados por cruces cercanos pero ajenos al clic.
+    # Si el snap es lejano, primero se resuelve el caso de rio
+    # ancho/multicanal. Asi una union local secundaria no intercepta
+    # el diagnostico del tronco principal (caso Napo/Mazan).
+    primary_distance <- ambiguity_snap_distance_m(
+      primary,
+      default = 0
+    )
+
+    if (primary_distance >= AMBIGUITY_WIDE_TRIGGER_M) {
+      wide <- ambiguity_wide_multichannel(
+        lon = lon,
+        lat = lat,
+        primary = primary,
+        grid_template = grid_template,
+        stream_cache = stream_cache,
+        stripe_rows = stripe_rows,
+        n_stripes = n_stripes,
+        reverse_cache = reverse_cache,
+        threshold_cells = threshold_cells
+      )
+
+      if (!is.null(wide)) {
+        return(wide)
+      }
+    }
+
+    # Para clicks bien alineados con la red, una confluencia solo es
+    # ambigua si la otra rama esta tambien suficientemente cerca del
+    # clic y converge con la trayectoria D8 del outlet principal.
     confluence <- ambiguity_near_confluence(
       lon = lon,
       lat = lat,
@@ -2103,26 +2168,6 @@ delimitacion <- local({
 
     if (!is.null(confluence)) {
       return(confluence)
-    }
-
-    # Rios anchos y brazos trenzados: dos brazos pueden formar una
-    # sola componente espacial. Se comparan caminos D8 y se ofrece
-    # el brazo alternativo mas compatible, mas el cauce combinado
-    # aguas abajo cuando existe.
-    wide <- ambiguity_wide_multichannel(
-      lon = lon,
-      lat = lat,
-      primary = primary,
-      grid_template = grid_template,
-      stream_cache = stream_cache,
-      stripe_rows = stripe_rows,
-      n_stripes = n_stripes,
-      reverse_cache = reverse_cache,
-      threshold_cells = threshold_cells
-    )
-
-    if (!is.null(wide)) {
-      return(wide)
     }
 
     list(

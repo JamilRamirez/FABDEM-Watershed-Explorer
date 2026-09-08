@@ -16,6 +16,7 @@ cases <- data.frame(
 )
 
 results <- list()
+failures <- character(0)
 
 for (kk in seq_len(nrow(cases))) {
   case <- cases[kk, ]
@@ -101,10 +102,13 @@ for (kk in seq_len(nrow(cases))) {
   })
 
   if (!identical(observed$status, case$expected)) {
-    stop(
-      case$name, ': esperado ', case$expected,
-      ' pero se obtuvo ', observed$status,
-      ' (', observed$reason, ')'
+    failures <- c(
+      failures,
+      paste0(
+        case$name, ': esperado ', case$expected,
+        ' pero se obtuvo ', observed$status,
+        ' (', observed$reason, ')'
+      )
     )
   }
 
@@ -123,6 +127,12 @@ for (kk in seq_len(nrow(cases))) {
   if (is.finite(observed$combined_area_est_km2)) {
     cat('combined_area_est_km2=', sprintf('%.1f', observed$combined_area_est_km2), '\n', sep='')
   }
+}
+
+if (length(failures) > 0L) {
+  cat('\nREAL RUNTIME AMBIGUITY QA: FAIL\n')
+  cat(paste0(' - ', failures, collapse = '\n'), '\n')
+  stop('Fallaron ', length(failures), ' casos de QA Runtime.')
 }
 
 cat('\nREAL RUNTIME AMBIGUITY QA: PASS\n')
