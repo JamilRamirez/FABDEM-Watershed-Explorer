@@ -1366,6 +1366,828 @@ delimitacion <- local({
   }
 
 
+  # ==========================================================
+  # RESOLUCION EXPLICITA DE AMBIGUEDAD HIDROLOGICA
+  # ==========================================================
+  # Principio:
+  # - primero se obtiene el snap estable;
+  # - una confluencia solo es ambigua si DOS caminos D8 asociados
+  #   al entorno inmediato del clic convergen cerca del clic;
+  # - para rios anchos/multicanal no se usan componentes espaciales:
+  #   se comparan caminos D8, aunque pertenezcan a una misma red;
+  # - celdas sobre la misma trayectoria se colapsan como una sola
+  #   alternativa.
+
+  AMBIGUITY_JUNCTION_MAX_M <- 450
+  AMBIGUITY_JUNCTION_MARGIN_M <- 120
+  AMBIGUITY_WIDE_TRIGGER_M <- 300
+  AMBIGUITY_WIDE_SCAN_M <- 2200
+  AMBIGUITY_WIDE_PATH_M <- 6000
+  AMBIGUITY_WIDE_MIN_PARALLEL <- 0.20
+  AMBIGUITY_MAX_OPTIONS <- 3L
+
+
+  ambiguity_snap_distance_m <- function(primary, default = 0) {
+
+    value <- suppressWarnings(
+      as.numeric(primary$snap_distance_m)
+    )
+
+    if (length(value) < 1L || !is.finite(value[1])) {
+      return(default)
+    }
+
+    as.numeric(value[1])
+  }
+
+
+  ambiguity_snap_from_cell <- function(
+      lon,
+      lat,
+      outlet_cell,
+      role,
+      mode,
+      reverse_cache,
+      grid_template,
+      stream_cache,
+      stripe_rows,
+      n_stripes,
+      threshold_cells
+  ) {
+
+    outlet_cell <- as.double(outlet_cell)
+
+    if (
+      !is.finite(outlet_cell) ||
+      !snap_upstream_reaches_threshold(
+        reverse_cache = reverse_cache,
+        outlet_cell = outlet_cell,
+        threshold_cells = threshold_cells
+      )
+    ) {
+      return(NULL)
+    }
+
+    stream_value <- snap_stream_value_at_cell(
+      cell = outlet_cell,
+      grid_template = grid_template,
+      stream_cache = stream_cache,
+      stripe_rows = stripe_rows,
+      n_stripes = n_stripes
+    )
+
+    if (!is.finite(stream_value) || stream_value <= 0) {
+      return(NULL)
+    }
+
+    out <- snap_build_result(
+      lon = lon,
+      lat = lat,
+      outlet_cell = outlet_cell,
+      grid_template = grid_template,
+      grid_crs = sf::st_crs(terra::crs(grid_template)),
+      stream_value = stream_value,
+      mode = mode
+    )
+
+    out$ambiguity_role <- role
+    out
+  }
+
+
+  ambiguity_downstream_path <- function(
+      start_cell,
+      reverse_cache,
+      grid_template,
+      click_lon,
+      click_lat,
+      max_distance_m = 1500,
+      max_steps = 256L
+  ) {
+
+    grid_crs <- sf::st_crs(terra::crs(grid_template))
+    epsg <- utm_epsg_point(click_lon, click_lat)
+
+    click_wgs <- sf::st_sfc(
+      sf::st_point(c(click_lon, click_lat)),
+      crs = 4326
+    )
+    click_xy <- as.numeric(
+      sf::st_coordinates(sf::st_transform(click_wgs, epsg))[1, ]
+    )
+
+    current <- as.double(start_cell)
+    current_xy <- snap_cell_utm_xy(
+      cell = current,
+      grid_template = grid_template,
+      grid_crs = grid_crs,
+      epsg = epsg
+    )
+
+    cells <- current
+    along_m <- 0
+    click_distance_m <- sqrt(sum((current_xy - click_xy)^2))
+    xy <- matrix(current_xy, nrow = 1)
+    seen <- new.env(hash = TRUE, parent = emptyenv())
+    assign(as.character(current), TRUE, envir = seen)
+
+    for (step in seq_len(max_steps)) {
+      next_cell <- snap_downstream_cell(reverse_cache, current)
+
+      if (!is.finite(next_cell)) {
+        break
+      }
+
+      key <- as.character(next_cell)
+      if (exists(key, envir = seen, inherits = FALSE)) {
+        break
+      }
+      assign(key, TRUE, envir = seen)
+
+      next_xy <- snap_cell_utm_xy(
+        cell = next_cell,
+        grid_template = grid_template,
+        grid_crs = grid_crs,
+        epsg = epsg
+      )
+
+      step_m <- sqrt(sum((next_xy - current_xy)^2))
+      if (!is.finite(step_m)) {
+        break
+      }
+
+      new_along <- tail(along_m, 1) + step_m
+      if (new_along > max_distance_m) {
+        break
+      }
+
+      cells <- c(cells, as.double(next_cell))
+      along_m <- c(along_m, new_along)
+      click_distance_m <- c(
+        click_distance_m,
+        sqrt(sum((next_xy - click_xy)^2))
+      )
+      xy <- rbind(xy, next_xy)
+
+      current <- as.double(next_cell)
+      current_xy <- next_xy
+    }
+
+    list(
+      cells = cells,
+      along_m = along_m,
+      click_distance_m = click_distance_m,
+      xy = xy
+    )
+  }
+
+
+  ambiguity_direction_similarity <- function(path_a, path_b) {
+
+    direction <- function(path) {
+      if (is.null(path$xy) || nrow(path$xy) < 2L) {
+        return(c(NA_real_, NA_real_))
+      }
+      idx <- min(8L, nrow(path$xy))
+      as.numeric(path$xy[idx, ] - path$xy[1, ])
+    }
+
+    va <- direction(path_a)
+    vb <- direction(path_b)
+    na <- sqrt(sum(va^2))
+    nb <- sqrt(sum(vb^2))
+
+    if (!is.finite(na) || !is.finite(nb) || na <= 0 || nb <= 0) {
+      return(NA_real_)
+    }
+
+    max(-1, min(1, sum(va * vb) / (na * nb)))
+  }
+
+
+  ambiguity_thin_candidates <- function(
+      candidates,
+      grid_template,
+      lon,
+      lat,
+      min_separation_m = 90,
+      max_seeds = 36L
+  ) {
+
+    if (is.null(candidates) || nrow(candidates) <= 1L) {
+      return(candidates)
+    }
+
+    grid_crs <- sf::st_crs(terra::crs(grid_template))
+    epsg <- utm_epsg_point(lon, lat)
+
+    sf_candidates <- sf::st_as_sf(
+      candidates,
+      coords = c('x', 'y'),
+      crs = grid_crs,
+      remove = FALSE
+    )
+
+    xy <- sf::st_coordinates(sf::st_transform(sf_candidates, epsg))
+    ord <- order(candidates$distance_m)
+    keep <- integer(0)
+
+    for (idx in ord) {
+      if (length(keep) == 0L) {
+        keep <- idx
+      } else {
+        d <- sqrt(
+          (xy[keep, 1] - xy[idx, 1])^2 +
+          (xy[keep, 2] - xy[idx, 2])^2
+        )
+        if (all(d >= min_separation_m)) {
+          keep <- c(keep, idx)
+        }
+      }
+
+      if (length(keep) >= max_seeds) {
+        break
+      }
+    }
+
+    candidates[keep, , drop = FALSE]
+  }
+
+
+  ambiguity_near_confluence <- function(
+      lon,
+      lat,
+      primary,
+      grid_template,
+      stream_cache,
+      stripe_rows,
+      n_stripes,
+      reverse_cache,
+      threshold_cells
+  ) {
+
+    primary_distance <- ambiguity_snap_distance_m(
+      primary,
+      default = 0
+    )
+
+    # Una confluencia solo puede crear opciones si involucra la
+    # trayectoria D8 del outlet que el snap estable selecciono.
+    # Esto evita falsos positivos por cruces/tributarios cercanos
+    # que no pertenecen a la interpretacion inmediata del clic.
+    primary_path <- ambiguity_downstream_path(
+      start_cell = primary$outlet_cell,
+      reverse_cache = reverse_cache,
+      grid_template = grid_template,
+      click_lon = lon,
+      click_lat = lat,
+      max_distance_m = 1600,
+      max_steps = 128L
+    )
+
+    merge_limit_m <- min(
+      AMBIGUITY_JUNCTION_MAX_M,
+      max(90, primary_distance + AMBIGUITY_JUNCTION_MARGIN_M)
+    )
+
+    seed_radius_m <- min(600, merge_limit_m + 180)
+
+    candidates <- snap_collect_stream_candidates(
+      lon = lon,
+      lat = lat,
+      radius_m = seed_radius_m,
+      grid_template = grid_template,
+      stream_cache = stream_cache,
+      stripe_rows = stripe_rows,
+      n_stripes = n_stripes
+    )
+
+    if (nrow(candidates) < 2L) {
+      return(NULL)
+    }
+
+    seeds <- ambiguity_thin_candidates(
+      candidates,
+      grid_template = grid_template,
+      lon = lon,
+      lat = lat,
+      min_separation_m = 75,
+      max_seeds = 28L
+    )
+
+    if (nrow(seeds) < 2L) {
+      return(NULL)
+    }
+
+    best <- NULL
+    best_score <- Inf
+
+    for (ii in seq_len(nrow(seeds))) {
+
+      seed_cell <- as.double(seeds$cell[ii])
+
+      # El propio outlet y otros puntos de su misma trayectoria no
+      # constituyen una segunda opcion.
+      if (seed_cell == as.double(primary$outlet_cell)) {
+        next
+      }
+
+      path_now <- ambiguity_downstream_path(
+        start_cell = seed_cell,
+        reverse_cache = reverse_cache,
+        grid_template = grid_template,
+        click_lon = lon,
+        click_lat = lat,
+        max_distance_m = 1600,
+        max_steps = 128L
+      )
+
+      merge <- snap_ambiguity_first_merge(
+        primary_path$cells,
+        path_now$cells
+      )
+
+      if (
+        is.null(merge) ||
+        isTRUE(merge$same_lineage) ||
+        merge$index_a <= 1L ||
+        merge$index_b <= 1L
+      ) {
+        next
+      }
+
+      merge_distance <- primary_path$click_distance_m[merge$index_a]
+      candidate_distance <- as.numeric(seeds$distance_m[ii])
+
+      if (
+        !is.finite(merge_distance) ||
+        merge_distance > merge_limit_m ||
+        !is.finite(candidate_distance)
+      ) {
+        next
+      }
+
+      # Si el clic esta claramente sobre el cauce primario, un
+      # tributario mas lejano que desemboca cerca NO vuelve ambiguo
+      # el clic. La tolerancia crece con la incertidumbre del snap.
+      closeness_tolerance_m <- max(
+        45,
+        0.35 * max(primary_distance, candidate_distance)
+      )
+
+      if (
+        primary_distance < AMBIGUITY_WIDE_TRIGGER_M &&
+        abs(candidate_distance - primary_distance) > closeness_tolerance_m
+      ) {
+        next
+      }
+
+      score <- merge_distance +
+        0.20 * candidate_distance +
+        0.10 * abs(candidate_distance - primary_distance)
+
+      if (score < best_score) {
+        best_score <- score
+        best <- list(
+          path = path_now,
+          merge = merge,
+          candidate_distance_m = candidate_distance,
+          merge_distance_m = merge_distance
+        )
+      }
+    }
+
+    if (is.null(best)) {
+      return(NULL)
+    }
+
+    # Opcion 1: rama donde realmente cayo el snap principal,
+    # inmediatamente antes de la union.
+    branch_primary <- primary_path$cells[best$merge$index_a - 1L]
+    # Opcion 2: la otra rama, inmediatamente antes de la union.
+    branch_alternate <- best$path$cells[best$merge$index_b - 1L]
+    # Opcion 3: cauce combinado inmediatamente aguas abajo.
+    downstream <- snap_downstream_cell(reverse_cache, best$merge$cell)
+
+    option_cells <- c(branch_primary, branch_alternate)
+    roles <- c('Rama seleccionada por el clic', 'Rama alternativa')
+    modes <- c(
+      'AMBIGUOUS_CONFLUENCE_PRIMARY',
+      'AMBIGUOUS_CONFLUENCE_ALTERNATIVE'
+    )
+
+    if (is.finite(downstream)) {
+      option_cells <- c(option_cells, downstream)
+      roles <- c(roles, 'Aguas abajo de la confluencia')
+      modes <- c(modes, 'AMBIGUOUS_CONFLUENCE_DOWNSTREAM')
+    }
+
+    options <- lapply(
+      seq_along(option_cells),
+      function(ii) ambiguity_snap_from_cell(
+        lon = lon,
+        lat = lat,
+        outlet_cell = option_cells[ii],
+        role = roles[ii],
+        mode = modes[ii],
+        reverse_cache = reverse_cache,
+        grid_template = grid_template,
+        stream_cache = stream_cache,
+        stripe_rows = stripe_rows,
+        n_stripes = n_stripes,
+        threshold_cells = threshold_cells
+      )
+    )
+
+    options <- Filter(Negate(is.null), options)
+
+    if (length(options) < 2L) {
+      return(NULL)
+    }
+
+    cells <- vapply(options, function(x) as.double(x$outlet_cell), numeric(1))
+    options <- options[!duplicated(cells)]
+
+    if (length(options) < 2L) {
+      return(NULL)
+    }
+
+    list(
+      status = 'ambiguous',
+      reason = 'CONFLUENCE_D8_PRIMARY_PATH',
+      merge_distance_m = best$merge_distance_m,
+      primary_distance_m = primary_distance,
+      alternative_distance_m = best$candidate_distance_m,
+      options = head(options, AMBIGUITY_MAX_OPTIONS)
+    )
+  }
+
+
+
+  ambiguity_wide_multichannel <- function(
+      lon,
+      lat,
+      primary,
+      grid_template,
+      stream_cache,
+      stripe_rows,
+      n_stripes,
+      reverse_cache,
+      threshold_cells
+  ) {
+
+    primary_distance <- ambiguity_snap_distance_m(
+      primary,
+      default = NA_real_
+    )
+
+    if (
+      is.null(primary) ||
+      !is.finite(primary_distance) ||
+      primary_distance < AMBIGUITY_WIDE_TRIGGER_M
+    ) {
+      return(NULL)
+    }
+
+    candidates <- snap_collect_stream_candidates(
+      lon = lon,
+      lat = lat,
+      radius_m = AMBIGUITY_WIDE_SCAN_M,
+      grid_template = grid_template,
+      stream_cache = stream_cache,
+      stripe_rows = stripe_rows,
+      n_stripes = n_stripes
+    )
+
+    if (nrow(candidates) < 2L) {
+      return(NULL)
+    }
+
+    seeds <- ambiguity_thin_candidates(
+      candidates,
+      grid_template = grid_template,
+      lon = lon,
+      lat = lat,
+      min_separation_m = 120,
+      max_seeds = 40L
+    )
+
+    primary_path <- ambiguity_downstream_path(
+      start_cell = primary$outlet_cell,
+      reverse_cache = reverse_cache,
+      grid_template = grid_template,
+      click_lon = lon,
+      click_lat = lat,
+      max_distance_m = AMBIGUITY_WIDE_PATH_M,
+      max_steps = 256L
+    )
+
+    matches <- list()
+
+    for (ii in seq_len(nrow(seeds))) {
+
+      seed_cell <- as.double(seeds$cell[ii])
+      if (seed_cell == as.double(primary$outlet_cell)) {
+        next
+      }
+
+      path_now <- ambiguity_downstream_path(
+        start_cell = seed_cell,
+        reverse_cache = reverse_cache,
+        grid_template = grid_template,
+        click_lon = lon,
+        click_lat = lat,
+        max_distance_m = AMBIGUITY_WIDE_PATH_M,
+        max_steps = 256L
+      )
+
+      merge <- snap_ambiguity_first_merge(
+        primary_path$cells,
+        path_now$cells
+      )
+
+      if (
+        is.null(merge) ||
+        isTRUE(merge$same_lineage) ||
+        merge$index_a <= 1L ||
+        merge$index_b <= 1L
+      ) {
+        next
+      }
+
+      merge_distance <- primary_path$click_distance_m[merge$index_a]
+
+      # En un rio ancho/multicanal, una segunda trayectoria solo
+      # representa una ambiguedad real del clic si la reunion D8
+      # ocurre todavia en el entorno local. Un canal que converge
+      # mucho mas abajo puede ser hidrologicamente relacionado,
+      # pero no compite con el outlet que el usuario senalo.
+      merge_limit_m <- min(
+        AMBIGUITY_WIDE_PATH_M,
+        max(700, 2 * primary_distance)
+      )
+
+      if (!is.finite(merge_distance) || merge_distance > merge_limit_m) {
+        next
+      }
+
+      parallel <- ambiguity_direction_similarity(primary_path, path_now)
+      if (is.finite(parallel) && parallel < AMBIGUITY_WIDE_MIN_PARALLEL) {
+        next
+      }
+
+      score <- seeds$distance_m[ii] +
+        0.20 * merge_distance +
+        if (is.finite(parallel)) 300 * (1 - parallel) else 150
+
+      matches[[length(matches) + 1L]] <- list(
+        seed_index = ii,
+        path = path_now,
+        merge = merge,
+        parallel = parallel,
+        merge_distance_m = merge_distance,
+        score = score
+      )
+    }
+
+    if (length(matches) == 0L) {
+      return(NULL)
+    }
+
+    ord <- order(vapply(matches, function(x) x$score, numeric(1)))
+    best <- matches[[ord[1]]]
+
+    alternative_cell <- best$path$cells[best$merge$index_b - 1L]
+    downstream_cell <- snap_downstream_cell(reverse_cache, best$merge$cell)
+
+    primary$ambiguity_role <- 'Cauce inicialmente seleccionado'
+    options <- list(primary)
+
+    alt <- ambiguity_snap_from_cell(
+      lon = lon,
+      lat = lat,
+      outlet_cell = alternative_cell,
+      role = 'Rama/cauce alternativo',
+      mode = 'AMBIGUOUS_WIDE_ALTERNATIVE',
+      reverse_cache = reverse_cache,
+      grid_template = grid_template,
+      stream_cache = stream_cache,
+      stripe_rows = stripe_rows,
+      n_stripes = n_stripes,
+      threshold_cells = threshold_cells
+    )
+
+    if (!is.null(alt)) {
+      options[[length(options) + 1L]] <- alt
+    }
+
+    if (is.finite(downstream_cell)) {
+      combined <- ambiguity_snap_from_cell(
+        lon = lon,
+        lat = lat,
+        outlet_cell = downstream_cell,
+        role = 'Cauce combinado aguas abajo',
+        mode = 'AMBIGUOUS_WIDE_COMBINED',
+        reverse_cache = reverse_cache,
+        grid_template = grid_template,
+        stream_cache = stream_cache,
+        stripe_rows = stripe_rows,
+        n_stripes = n_stripes,
+        threshold_cells = threshold_cells
+      )
+      if (!is.null(combined)) {
+        options[[length(options) + 1L]] <- combined
+      }
+    }
+
+    cells <- vapply(options, function(x) as.double(x$outlet_cell), numeric(1))
+    options <- options[!duplicated(cells)]
+
+    if (length(options) < 2L) {
+      return(NULL)
+    }
+
+    list(
+      status = 'ambiguous',
+      reason = 'WIDE_MULTICHANNEL_D8',
+      merge_distance_m = best$merge_distance_m,
+      direction_similarity = best$parallel,
+      options = head(options, AMBIGUITY_MAX_OPTIONS)
+    )
+  }
+
+
+  ambiguity_from_near_tie <- function(
+      lon,
+      lat,
+      radius_m,
+      grid_template,
+      stream_cache,
+      stripe_rows,
+      n_stripes,
+      reverse_cache,
+      threshold_cells,
+      original_error
+  ) {
+
+    radii_m <- snap_progressive_radii(radius_m)
+    candidates <- snap_collect_stream_candidates(
+      lon = lon,
+      lat = lat,
+      radius_m = max(radii_m),
+      grid_template = grid_template,
+      stream_cache = stream_cache,
+      stripe_rows = stripe_rows,
+      n_stripes = n_stripes
+    )
+
+    choice <- snap_select_progressive_candidate(
+      candidates = candidates,
+      radii_m = radii_m,
+      grid_ncols = terra::ncol(grid_template)
+    )
+
+    if (!identical(choice$status, 'ambiguous')) {
+      stop(original_error)
+    }
+
+    idxs <- c(choice$winner_index, choice$alternative_index)
+    options <- lapply(
+      seq_along(idxs),
+      function(ii) ambiguity_snap_from_cell(
+        lon = lon,
+        lat = lat,
+        outlet_cell = candidates$cell[idxs[ii]],
+        role = paste0('Cauce candidato ', ii),
+        mode = 'AMBIGUOUS_NEAR_TIE',
+        reverse_cache = reverse_cache,
+        grid_template = grid_template,
+        stream_cache = stream_cache,
+        stripe_rows = stripe_rows,
+        n_stripes = n_stripes,
+        threshold_cells = threshold_cells
+      )
+    )
+
+    options <- Filter(Negate(is.null), options)
+    if (length(options) < 2L) {
+      stop(original_error)
+    }
+
+    list(
+      status = 'ambiguous',
+      reason = 'NEAR_TIE',
+      options = options
+    )
+  }
+
+
+  find_ambiguity_options <- function(
+      lon,
+      lat,
+      radius_m,
+      grid_template,
+      stream_cache,
+      stripe_rows,
+      n_stripes
+  ) {
+
+    block_id <- as.character(stream_cache$block_id)
+    meta <- get_block_metadata(block_id)
+    threshold_cells <- as.double(meta[['STREAM_THRESHOLD_CELLS']][1])
+    reverse_cache <- new_snap_reverse_cache(block_id)
+
+    primary <- tryCatch(
+      snap_to_stream_stripes(
+        lon = lon,
+        lat = lat,
+        radius_m = radius_m,
+        grid_template = grid_template,
+        stream_cache = stream_cache,
+        stripe_rows = stripe_rows,
+        n_stripes = n_stripes
+      ),
+      error = function(e) e
+    )
+
+    if (inherits(primary, 'error')) {
+      message_text <- conditionMessage(primary)
+      if (!grepl(
+        'entre dos cauces hidrologicos distintos',
+        message_text,
+        fixed = TRUE
+      )) {
+        stop(primary)
+      }
+
+      return(
+        ambiguity_from_near_tie(
+          lon = lon,
+          lat = lat,
+          radius_m = radius_m,
+          grid_template = grid_template,
+          stream_cache = stream_cache,
+          stripe_rows = stripe_rows,
+          n_stripes = n_stripes,
+          reverse_cache = reverse_cache,
+          threshold_cells = threshold_cells,
+          original_error = primary
+        )
+      )
+    }
+
+    # Si el snap es lejano, primero se resuelve el caso de rio
+    # ancho/multicanal. Asi una union local secundaria no intercepta
+    # el diagnostico del tronco principal (caso Napo/Mazan).
+    primary_distance <- ambiguity_snap_distance_m(
+      primary,
+      default = 0
+    )
+
+    if (primary_distance >= AMBIGUITY_WIDE_TRIGGER_M) {
+      wide <- ambiguity_wide_multichannel(
+        lon = lon,
+        lat = lat,
+        primary = primary,
+        grid_template = grid_template,
+        stream_cache = stream_cache,
+        stripe_rows = stripe_rows,
+        n_stripes = n_stripes,
+        reverse_cache = reverse_cache,
+        threshold_cells = threshold_cells
+      )
+
+      if (!is.null(wide)) {
+        return(wide)
+      }
+    }
+
+    # Para clicks bien alineados con la red, una confluencia solo es
+    # ambigua si la otra rama esta tambien suficientemente cerca del
+    # clic y converge con la trayectoria D8 del outlet principal.
+    confluence <- ambiguity_near_confluence(
+      lon = lon,
+      lat = lat,
+      primary = primary,
+      grid_template = grid_template,
+      stream_cache = stream_cache,
+      stripe_rows = stripe_rows,
+      n_stripes = n_stripes,
+      reverse_cache = reverse_cache,
+      threshold_cells = threshold_cells
+    )
+
+    if (!is.null(confluence)) {
+      return(confluence)
+    }
+
+    list(
+      status = 'single',
+      reason = 'UNAMBIGUOUS',
+      options = list(primary)
+    )
+  }
+
 
 
   ui <- function(id) {
@@ -1393,7 +2215,9 @@ delimitacion <- local({
             ".coord-grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;}",
             ".coord-note{font-size:12px;color:#555;margin:4px 0 8px 0;}",
             ".delimitacion-export{margin-top:12px;padding-top:10px;border-top:1px solid #d8d8d8;}",
-            ".delimitacion-export .btn{width:100%;margin-top:2px;}"
+            ".delimitacion-export .btn{width:100%;margin-top:2px;}",
+            ".ambiguity-box{margin:10px 0;padding:10px;border:1px solid #f0ad4e;",
+            "border-radius:6px;background:#fff8e8;}"
           )
         )
       ),
@@ -1431,6 +2255,13 @@ delimitacion <- local({
           shiny::uiOutput(
             ns(
               "origin_controls"
+            )
+          ),
+
+
+          shiny::uiOutput(
+            ns(
+              "ambiguity_controls"
             )
           ),
 
@@ -1526,6 +2357,509 @@ delimitacion <- local({
           stream_threshold_km2 = NULL
         )
 
+
+
+
+
+        ambiguity_previews <- shiny::reactiveVal(NULL)
+        ambiguity_context <- shiny::reactiveVal(NULL)
+
+        ambiguity_colors <- c(
+          '#1565C0',
+          '#2E7D32',
+          '#6A1B9A'
+        )
+
+
+        clear_ambiguity_preview <- function(
+            clear_map = TRUE,
+            remove_files = TRUE
+        ) {
+
+          context <- ambiguity_context()
+          ambiguity_previews(NULL)
+          ambiguity_context(NULL)
+
+          if (
+            isTRUE(remove_files) &&
+            !is.null(context) &&
+            !is.null(context$work_root) &&
+            dir.exists(context$work_root)
+          ) {
+            unlink(
+              context$work_root,
+              recursive = TRUE,
+              force = TRUE
+            )
+          }
+
+          if (isTRUE(clear_map)) {
+            leaflet::leafletProxy(
+              'mapa',
+              session = session
+            ) |>
+              leaflet::clearGroup('Cuencas candidatas') |>
+              leaflet::clearGroup('Outlets candidatos')
+          }
+
+          invisible(NULL)
+        }
+
+
+        ambiguity_area_km2 <- function(basin_sf) {
+          sum(
+            as.double(
+              sf::st_area(
+                sf::st_transform(
+                  basin_sf,
+                  6933
+                )
+              )
+            ),
+            na.rm = TRUE
+          ) / 1e6
+        }
+
+
+        materialize_ambiguity_option <- function(
+            option,
+            candidate_index,
+            grid_template,
+            work_root
+        ) {
+
+          candidate_dir <- file.path(
+            work_root,
+            paste0('candidate_', candidate_index)
+          )
+
+          dir.create(
+            candidate_dir,
+            recursive = TRUE,
+            showWarnings = FALSE
+          )
+
+          temp_dir <- file.path(
+            candidate_dir,
+            'terra_tmp'
+          )
+
+          dir.create(
+            temp_dir,
+            recursive = TRUE,
+            showWarnings = FALSE
+          )
+
+          trace <- trace_upstream(
+            cache = block_cache$reverse_cache,
+            outlet_cell = option$outlet_cell
+          )
+
+          if (
+            trace$n_cells <
+              block_cache$stream_threshold_cells
+          ) {
+            stop(
+              'La alternativa no alcanza el umbral hidrologico minimo.'
+            )
+          }
+
+          trace_cells <- as.double(
+            trace$n_cells
+          )
+
+          trace_engine <- if (
+            !is.null(trace$trace_engine)
+          ) {
+            as.character(trace$trace_engine)
+          } else {
+            'UNKNOWN'
+          }
+
+          basin_tif <- file.path(
+            candidate_dir,
+            'basin.tif'
+          )
+
+          write_basin_raster(
+            cells = trace$cells,
+            template = grid_template,
+            output_file = basin_tif,
+            temp_dir = temp_dir,
+            bbox = trace$bbox
+          )
+
+          rm(trace)
+          gc()
+
+          basin_gpkg <- file.path(
+            candidate_dir,
+            'basin.gpkg'
+          )
+
+          basin_sf <- polygonize_basin(
+            basin_tif,
+            basin_gpkg,
+            expected_cells = trace_cells
+          )
+
+          area_km2 <- ambiguity_area_km2(
+            basin_sf
+          )
+
+          outlet_sf <- sf::st_sf(
+            OPTION = candidate_index,
+            ROLE = if (!is.null(option$ambiguity_role)) {
+              option$ambiguity_role
+            } else {
+              paste0('Opcion ', candidate_index)
+            },
+            SNAP_MODE = option$snap_mode,
+            SNAP_DISTANCE_M = option$snap_distance_m,
+            geometry = sf::st_sfc(
+              sf::st_point(
+                c(
+                  option$outlet_lon,
+                  option$outlet_lat
+                )
+              ),
+              crs = 4326
+            )
+          )
+
+          outlet_file <- file.path(
+            candidate_dir,
+            'outlet.gpkg'
+          )
+
+          sf::st_write(
+            outlet_sf,
+            outlet_file,
+            layer = 'outlet',
+            quiet = TRUE,
+            delete_dsn = TRUE
+          )
+
+          basin_map <- basin_sf |>
+            sf::st_transform(3857) |>
+            sf::st_simplify(
+              dTolerance = MAP_SIMPLIFY_M,
+              preserveTopology = TRUE
+            ) |>
+            sf::st_transform(4326)
+
+          list(
+            index = candidate_index,
+            snap = option,
+            basin_sf = basin_sf,
+            basin_map = basin_map,
+            basin_tif = basin_tif,
+            basin_gpkg = basin_gpkg,
+            outlet_sf = outlet_sf,
+            outlet_file = outlet_file,
+            area_km2 = area_km2,
+            trace_cells = trace_cells,
+            trace_engine = trace_engine
+          )
+        }
+
+
+        render_ambiguity_map <- function(previews) {
+
+          proxy <- leaflet::leafletProxy(
+            'mapa',
+            session = session
+          ) |>
+            leaflet::clearGroup('Punto') |>
+            leaflet::clearGroup('Cuenca delimitada') |>
+            leaflet::clearGroup('Cuencas candidatas') |>
+            leaflet::clearGroup('Outlets candidatos')
+
+          bboxes <- list()
+
+          for (ii in seq_along(previews)) {
+
+            preview <- previews[[ii]]
+            color_now <- ambiguity_colors[ii]
+
+            label_now <- paste0(
+              'Opcion ',
+              ii,
+              ' · ',
+              format(
+                round(preview$area_km2, 1),
+                big.mark = ',',
+                scientific = FALSE,
+                trim = TRUE
+              ),
+              ' km²'
+            )
+
+            proxy <- proxy |>
+              leaflet::addPolygons(
+                data = preview$basin_map,
+                group = 'Cuencas candidatas',
+                layerId = paste0('AMBIG_BASIN_', ii),
+                color = color_now,
+                weight = 3,
+                opacity = 0.95,
+                fillColor = color_now,
+                fillOpacity = 0.12,
+                label = label_now
+              ) |>
+              leaflet::addCircleMarkers(
+                lng = preview$snap$outlet_lon,
+                lat = preview$snap$outlet_lat,
+                group = 'Outlets candidatos',
+                layerId = paste0('AMBIG_', ii),
+                radius = 10,
+                color = color_now,
+                fillColor = color_now,
+                fillOpacity = 1,
+                weight = 3,
+                label = label_now,
+                labelOptions = leaflet::labelOptions(
+                  noHide = TRUE,
+                  direction = 'top'
+                )
+              )
+
+            bboxes[[ii]] <- sf::st_bbox(
+              preview$basin_map
+            )
+          }
+
+          bbox_matrix <- do.call(
+            rbind,
+            lapply(bboxes, as.numeric)
+          )
+
+          proxy |>
+            leaflet::fitBounds(
+              min(bbox_matrix[, 1], na.rm = TRUE),
+              min(bbox_matrix[, 2], na.rm = TRUE),
+              max(bbox_matrix[, 3], na.rm = TRUE),
+              max(bbox_matrix[, 4], na.rm = TRUE)
+            )
+
+          invisible(NULL)
+        }
+
+
+        output$ambiguity_controls <- shiny::renderUI({
+
+          previews <- ambiguity_previews()
+
+          if (
+            is.null(previews) ||
+            length(previews) < 2L
+          ) {
+            return(NULL)
+          }
+
+          shiny::div(
+            class = 'ambiguity-box',
+            shiny::tags$strong(
+              'Se detectaron varias cuencas posibles'
+            ),
+            shiny::div(
+              class = 'coord-note',
+              paste0(
+                'Haz clic en uno de los outlets numerados del mapa ',
+                'o elige una opcion aqui. Las alternativas ya fueron ',
+                'delimitadas para que puedas comparar sus areas.'
+              )
+            ),
+            lapply(
+              seq_along(previews),
+              function(ii) {
+                shiny::actionButton(
+                  session$ns(
+                    paste0('elegir_candidato_', ii)
+                  ),
+                  paste0(
+                    'Opcion ',
+                    ii,
+                    ' · ',
+                    format(
+                      round(
+                        previews[[ii]]$area_km2,
+                        1
+                      ),
+                      big.mark = ',',
+                      scientific = FALSE,
+                      trim = TRUE
+                    ),
+                    ' km²'
+                  ),
+                  width = '100%',
+                  style = 'margin-top:5px;'
+                )
+              }
+            )
+          )
+        })
+
+
+        activate_ambiguity_candidate <- function(candidate_index) {
+
+          previews <- ambiguity_previews()
+          context <- ambiguity_context()
+          candidate_index <- as.integer(candidate_index)
+
+          if (
+            is.null(previews) ||
+            is.null(context) ||
+            !is.finite(candidate_index) ||
+            candidate_index < 1L ||
+            candidate_index > length(previews)
+          ) {
+            return(invisible(FALSE))
+          }
+
+          chosen <- previews[[candidate_index]]
+
+          dir.create(
+            context$out_dir,
+            recursive = TRUE,
+            showWarnings = FALSE
+          )
+
+          copied <- c(
+            file.copy(
+              chosen$basin_tif,
+              file.path(context$out_dir, 'basin.tif'),
+              overwrite = TRUE
+            ),
+            file.copy(
+              chosen$basin_gpkg,
+              file.path(context$out_dir, 'basin.gpkg'),
+              overwrite = TRUE
+            )
+          )
+
+          if (!all(copied)) {
+            stop(
+              'No fue posible consolidar la alternativa seleccionada.'
+            )
+          }
+
+          outlet_target <- file.path(
+            context$out_dir,
+            'outlet.gpkg'
+          )
+
+          if (file.exists(outlet_target)) {
+            unlink(outlet_target, force = TRUE)
+          }
+
+          outlet_sf <- chosen$outlet_sf
+          outlet_sf$NAME <- context$nombre
+          outlet_sf$BLOCK_ID <- context$block_id
+
+          sf::st_write(
+            outlet_sf,
+            outlet_target,
+            layer = 'outlet',
+            quiet = TRUE
+          )
+
+          basin_result(chosen$basin_sf)
+          outlet_result(outlet_sf)
+          output_folder(context$out_dir)
+          block_id_result(context$block_id)
+          basin_source_result('delineated')
+          basin_label_result(context$nombre)
+
+          writeLines(
+            c(
+              paste(
+                'Completed:',
+                format(
+                  Sys.time(),
+                  '%Y-%m-%d %H:%M:%S'
+                )
+              ),
+              paste('Block:', context$block_id),
+              paste('Ambiguity reason:', context$reason),
+              paste('Selected option:', candidate_index),
+              paste('Area km2:', sprintf('%.3f', chosen$area_km2)),
+              paste('Snap mode:', chosen$snap$snap_mode),
+              paste('Snap distance m:', sprintf('%.1f', chosen$snap$snap_distance_m)),
+              paste('Trace cells:', round(chosen$trace_cells)),
+              paste('Trace engine:', chosen$trace_engine),
+              'Status: OK'
+            ),
+            file.path(
+              context$out_dir,
+              'COMPLETADO.txt'
+            )
+          )
+
+          bb <- sf::st_bbox(
+            chosen$basin_map
+          )
+
+          leaflet::leafletProxy(
+            'mapa',
+            session = session
+          ) |>
+            leaflet::clearGroup('Cuencas candidatas') |>
+            leaflet::clearGroup('Outlets candidatos') |>
+            leaflet::clearGroup('Punto') |>
+            leaflet::clearGroup('Cuenca delimitada') |>
+            leaflet::addPolygons(
+              data = chosen$basin_map,
+              group = 'Cuenca delimitada',
+              color = '#D50000',
+              weight = 3,
+              opacity = 1,
+              fillColor = '#FF5252',
+              fillOpacity = 0.22
+            ) |>
+            leaflet::addCircleMarkers(
+              lng = chosen$snap$outlet_lon,
+              lat = chosen$snap$outlet_lat,
+              group = 'Punto',
+              radius = 8,
+              color = '#B71C1C',
+              fillColor = '#EF5350',
+              fillOpacity = 1,
+              weight = 3,
+              popup = 'Outlet seleccionado'
+            ) |>
+            leaflet::fitBounds(
+              bb['xmin'],
+              bb['ymin'],
+              bb['xmax'],
+              bb['ymax']
+            )
+
+          shiny::showNotification(
+            paste0(
+              'Opcion ',
+              candidate_index,
+              ' seleccionada · ',
+              format(
+                round(chosen$area_km2, 1),
+                big.mark = ',',
+                scientific = FALSE,
+                trim = TRUE
+              ),
+              ' km².'
+            ),
+            type = 'message',
+            duration = 6
+          )
+
+          clear_ambiguity_preview(
+            clear_map = FALSE,
+            remove_files = TRUE
+          )
+
+          gc()
+          invisible(TRUE)
+        }
 
 
 
@@ -2328,6 +3662,9 @@ delimitacion <- local({
           lat <- point$lat
 
 
+          clear_ambiguity_preview()
+
+
           click_value(
             list(
               lon = lon,
@@ -2451,6 +3788,9 @@ delimitacion <- local({
         shiny::observeEvent(
           input$usar_cuenca_importada,
           {
+
+            clear_ambiguity_preview()
+
 
             tryCatch(
               {
@@ -2956,7 +4296,10 @@ delimitacion <- local({
                     snap_started <- Sys.time()
 
 
-                    snap <- snap_to_stream_stripes(
+
+                    clear_ambiguity_preview()
+
+                    ambiguity <- find_ambiguity_options(
                       lon = click$lon,
                       lat = click$lat,
                       radius_m = DEFAULT_SNAP_RADIUS_M,
@@ -2965,6 +4308,144 @@ delimitacion <- local({
                       stripe_rows = block_cache$stripe_rows,
                       n_stripes = block_cache$n_stripes
                     )
+
+                    if (identical(
+                      ambiguity$status,
+                      'ambiguous'
+                    )) {
+
+                      ambiguity_root <- file.path(
+                        TERRA_TEMP,
+                        paste0(
+                          'AMBIG_',
+                          gsub(
+                            '[^A-Za-z0-9_]',
+                            '_',
+                            session$token
+                          ),
+                          '_',
+                          format(
+                            Sys.time(),
+                            '%Y%m%d%H%M%S'
+                          )
+                        )
+                      )
+
+                      dir.create(
+                        ambiguity_root,
+                        recursive = TRUE,
+                        showWarnings = FALSE
+                      )
+
+                      previews <- list()
+
+                      for (ii in seq_along(
+                        ambiguity$options
+                      )) {
+
+                        shiny::setProgress(
+                          value = min(
+                            0.90,
+                            0.25 +
+                              0.60 *
+                                ii /
+                                length(ambiguity$options)
+                          ),
+                          detail = paste0(
+                            'Delimitando alternativa ',
+                            ii,
+                            ' de ',
+                            length(ambiguity$options)
+                          )
+                        )
+
+                        preview <- tryCatch(
+                          materialize_ambiguity_option(
+                            option = ambiguity$options[[ii]],
+                            candidate_index = ii,
+                            grid_template = grid_template,
+                            work_root = ambiguity_root
+                          ),
+                          error = function(e) {
+                            shiny::showNotification(
+                              paste0(
+                                'Alternativa ',
+                                ii,
+                                ': ',
+                                conditionMessage(e)
+                              ),
+                              type = 'warning',
+                              duration = 8
+                            )
+                            NULL
+                          }
+                        )
+
+                        if (!is.null(preview)) {
+                          previews[[length(previews) + 1L]] <- preview
+                        }
+                      }
+
+                      if (length(previews) >= 2L) {
+
+                        ambiguity_previews(previews)
+
+                        ambiguity_context(
+                          list(
+                            out_dir = out_dir,
+                            nombre = nombre,
+                            block_id = block_id,
+                            work_root = ambiguity_root,
+                            reason = ambiguity$reason
+                          )
+                        )
+
+                        render_ambiguity_map(previews)
+
+                        shiny::setProgress(
+                          value = 1,
+                          detail = paste0(
+                            'Se detectaron ',
+                            length(previews),
+                            ' cuencas posibles. Selecciona una.'
+                          )
+                        )
+
+                        shiny::showNotification(
+                          paste0(
+                            'Se detectaron ',
+                            length(previews),
+                            ' cuencas hidrologicamente posibles. ',
+                            'Selecciona el outlet numerado en el mapa.'
+                          ),
+                          type = 'warning',
+                          duration = 10
+                        )
+
+                        return(invisible(NULL))
+                      }
+
+                      if (length(previews) == 1L) {
+                        snap <- previews[[1]]$snap
+                        unlink(
+                          ambiguity_root,
+                          recursive = TRUE,
+                          force = TRUE
+                        )
+                      } else {
+                        unlink(
+                          ambiguity_root,
+                          recursive = TRUE,
+                          force = TRUE
+                        )
+                        stop(
+                          'No fue posible materializar las alternativas detectadas.'
+                        )
+                      }
+
+                    } else {
+                      snap <- ambiguity$options[[1]]
+                    }
 
 
                     stage_times$snap_s <- as.numeric(
@@ -3488,6 +4969,69 @@ delimitacion <- local({
         )
 
 
+
+        # ====================================================
+        # SELECCION DE CUENCA AMBIGUA
+        # ====================================================
+
+        shiny::observeEvent(
+          input$mapa_marker_click,
+          {
+            marker <- input$mapa_marker_click
+
+            if (
+              is.null(marker$id) ||
+              !grepl(
+                '^AMBIG_[123]$',
+                as.character(marker$id)
+              )
+            ) {
+              return()
+            }
+
+            idx <- as.integer(
+              sub(
+                '^AMBIG_',
+                '',
+                as.character(marker$id)
+              )
+            )
+
+            tryCatch(
+              activate_ambiguity_candidate(idx),
+              error = delim_error_handler
+            )
+          },
+          ignoreNULL = TRUE
+        )
+
+
+        lapply(
+          seq_len(AMBIGUITY_MAX_OPTIONS),
+          function(ii) {
+            local({
+              idx <- ii
+              input_id <- paste0(
+                'elegir_candidato_',
+                idx
+              )
+
+              shiny::observeEvent(
+                input[[input_id]],
+                {
+                  tryCatch(
+                    activate_ambiguity_candidate(idx),
+                    error = delim_error_handler
+                  )
+                },
+                ignoreInit = TRUE
+              )
+            })
+          }
+        )
+
+
+
         # ====================================================
         # LIMPIAR
         # ====================================================
@@ -3495,6 +5039,9 @@ delimitacion <- local({
         shiny::observeEvent(
           input$limpiar,
           {
+
+            clear_ambiguity_preview()
+
 
             click_value(
               NULL

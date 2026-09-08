@@ -1043,3 +1043,44 @@ snap_to_stream_stripes <- function(
     )
   )
 }
+
+
+# ============================================================
+# HELPERS DE AMBIGUEDAD TOPOLOGICA
+# ============================================================
+# Trabajan sobre caminos D8 ordenados aguas abajo. Se mantienen
+# fuera del modulo Shiny para poder probarlos en CI sin Runtime.
+
+snap_ambiguity_first_merge <- function(path_a, path_b) {
+
+  path_a <- as.double(path_a)
+  path_b <- as.double(path_b)
+
+  if (length(path_a) == 0L || length(path_b) == 0L) {
+    return(NULL)
+  }
+
+  common <- intersect(path_a, path_b)
+
+  if (length(common) == 0L) {
+    return(NULL)
+  }
+
+  ia <- match(common, path_a)
+  ib <- match(common, path_b)
+  pick <- which.min(ia + ib)
+
+  list(
+    cell = as.double(common[pick]),
+    index_a = as.integer(ia[pick]),
+    index_b = as.integer(ib[pick]),
+    same_lineage = isTRUE(ia[pick] == 1L || ib[pick] == 1L)
+  )
+}
+
+
+snap_ambiguity_same_lineage <- function(path_a, path_b) {
+  merge <- snap_ambiguity_first_merge(path_a, path_b)
+  !is.null(merge) && isTRUE(merge$same_lineage)
+}
+

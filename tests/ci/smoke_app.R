@@ -424,6 +424,54 @@ if (
 }
 
 
+
+# ============================================================
+# Regresion: semantica topologica de ambiguedad D8
+# ============================================================
+# Dos brazos que convergen deben ser ramas distintas. Dos puntos
+# sobre la misma trayectoria no deben crear dos opciones.
+
+merge_distinct <- app_env$snap_ambiguity_first_merge(
+  c(101, 102, 103, 104, 105),
+  c(201, 202, 203, 104, 105)
+)
+
+if (
+  is.null(merge_distinct) ||
+  merge_distinct$cell != 104 ||
+  merge_distinct$index_a != 4L ||
+  merge_distinct$index_b != 4L ||
+  isTRUE(merge_distinct$same_lineage)
+) {
+  stop('Regresion ambiguedad: dos brazos convergentes no fueron reconocidos como distintos.')
+}
+
+merge_same <- app_env$snap_ambiguity_first_merge(
+  c(101, 102, 103, 104, 105),
+  c(103, 104, 105)
+)
+
+if (
+  is.null(merge_same) ||
+  !isTRUE(merge_same$same_lineage) ||
+  !isTRUE(app_env$snap_ambiguity_same_lineage(
+    c(101, 102, 103, 104, 105),
+    c(103, 104, 105)
+  ))
+) {
+  stop('Regresion ambiguedad: dos puntos del mismo cauce fueron tratados como ramas distintas.')
+}
+
+merge_none <- app_env$snap_ambiguity_first_merge(
+  c(1, 2, 3),
+  c(10, 11, 12)
+)
+
+if (!is.null(merge_none)) {
+  stop('Regresion ambiguedad: caminos D8 independientes inventaron una confluencia.')
+}
+
+
 cat(
   "FABDEM Shiny smoke test: PASS\n",
   "Modules loaded: ",
