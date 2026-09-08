@@ -1387,6 +1387,20 @@ delimitacion <- local({
   AMBIGUITY_MAX_OPTIONS <- 3L
 
 
+  ambiguity_snap_distance_m <- function(primary, default = 0) {
+
+    value <- suppressWarnings(
+      as.numeric(primary$snap_distance_m)
+    )
+
+    if (length(value) < 1L || !is.finite(value[1])) {
+      return(default)
+    }
+
+    as.numeric(value[1])
+  }
+
+
   ambiguity_snap_from_cell <- function(
       lon,
       lat,
@@ -1612,9 +1626,10 @@ delimitacion <- local({
       threshold_cells
   ) {
 
-    primary_distance <- if (
-      !is.null(primary) && is.finite(primary$snap_distance_m)
-    ) primary$snap_distance_m else 0
+    primary_distance <- ambiguity_snap_distance_m(
+      primary,
+      default = 0
+    )
 
     merge_limit_m <- min(
       AMBIGUITY_JUNCTION_MAX_M,
@@ -1782,10 +1797,15 @@ delimitacion <- local({
       threshold_cells
   ) {
 
+    primary_distance <- ambiguity_snap_distance_m(
+      primary,
+      default = NA_real_
+    )
+
     if (
       is.null(primary) ||
-      !is.finite(primary$snap_distance_m) ||
-      primary$snap_distance_m < AMBIGUITY_WIDE_TRIGGER_M
+      !is.finite(primary_distance) ||
+      primary_distance < AMBIGUITY_WIDE_TRIGGER_M
     ) {
       return(NULL)
     }
