@@ -26,23 +26,25 @@ jobs:
             https://raw.githubusercontent.com/JamilRamirez/FABDEM-Watershed-Runtime/main/posit_data/remote_manifest.csv \
             -o data/remote_manifest.csv
 
-      - name: Validate catalog invariants
+      - name: Validate and update catalog metadata
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import csv
+          import re
           from collections import Counter
+          from pathlib import Path
 
-          path = 'data/remote_manifest.csv'
-          with open(path, newline='', encoding='utf-8-sig') as f:
+          manifest_path = Path('data/remote_manifest.csv')
+          with manifest_path.open(newline='', encoding='utf-8-sig') as f:
               rows = list(csv.DictReader(f))
 
-          assert len(rows) == 2319, f'Expected 2319 manifest rows, got {len(rows)}'
           blocks = {r['BLOCK_ID'] for r in rows}
-          assert len(blocks) == 21, f'Expected 21 blocks, got {len(blocks)}'
-
           counts = Counter(r['ASSET_TYPE'].strip().lower() for r in rows)
+
+          assert len(rows) == 2298, f'Expected 2298 manifest rows, got {len(rows)}'
+          assert len(blocks) == 21, f'Expected 21 blocks, got {len(blocks)}'
           assert counts['reverse'] == 1128, counts
           assert counts['stream'] == 1128, counts
           assert counts['hydrography'] == 0, counts
@@ -52,24 +54,37 @@ jobs:
           bad = [r for r in rows if 'hydrography_block.gpkg' in r['RELATIVE_PATH']]
           assert not bad, f'Found stale hydrography paths: {len(bad)}'
 
-          print('Manifest OK:', len(rows), 'rows;', len(blocks), 'blocks;', dict(counts))
-          PY
+          total_bytes = sum(float(r['SIZE_BYTES']) for r in rows if r['SIZE_BYTES'].strip())
+          logical_gb = total_bytes / (1024 ** 3)
 
-          grep -q '^Manifest rows: 2319$' data/CATALOG_READY.txt
-          grep -q '^Blocks: 21$' data/CATALOG_READY.txt
-          grep -q '^Reverse stripes: 1128$' data/CATALOG_READY.txt
-          grep -q '^Stream stripes: 1128$' data/CATALOG_READY.txt
+          ready_path = Path('data/CATALOG_READY.txt')
+          ready = ready_path.read_text(encoding='utf-8')
+          ready = re.sub(r'^Manifest rows: .*$', f'Manifest rows: {len(rows)}', ready, flags=re.M)
+          ready = re.sub(r'^Logical runtime assets GB: .*$', f'Logical runtime assets GB: {logical_gb:.3f}', ready, flags=re.M)
+          ready_path.write_text(ready, encoding='utf-8', newline='\n')
+
+          assert re.search(r'^Blocks: 21$', ready, flags=re.M)
+          assert re.search(r'^Reverse stripes: 1128$', ready, flags=re.M)
+          assert re.search(r'^Stream stripes: 1128$', ready, flags=re.M)
+          assert re.search(r'^Manifest rows: 2298$', ready, flags=re.M)
+
+          print('Manifest OK')
+          print('Rows:', len(rows))
+          print('Blocks:', len(blocks))
+          print('Assets:', dict(counts))
+          print('Logical runtime assets GB:', f'{logical_gb:.3f}')
+          PY
 
       - name: Remove temporary workflow
         shell: bash
         run: rm .github/workflows/sync_runtime_manifest.yml
 
-      - name: Commit synchronized manifest
+      - name: Commit synchronized catalog
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
-          git commit -m 'Sincroniza manifest del Explorer con Runtime'
+          git commit -m 'Sincroniza catálogo del Explorer con Runtime limpio'
           git push origin HEAD:chore/sync-runtime-manifest
