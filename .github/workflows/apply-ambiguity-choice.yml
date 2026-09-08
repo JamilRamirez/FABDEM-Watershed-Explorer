@@ -1,0 +1,34 @@
+name: Apply ambiguity choice patch
+
+on:
+  push:
+    branches:
+      - feature/ambiguous-outlet-choice
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[ambiguity-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/ambiguous-outlet-choice
+          fetch-depth: 0
+
+      - name: Apply patch
+        run: python3 tools/ci/apply_ambiguity_choice_patch.py
+
+      - name: Commit patched files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add R/delimitacion.R
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "Implementa seleccion explicita de cuencas ambiguas [ambiguity-applied]"
+          git push origin HEAD:feature/ambiguous-outlet-choice
