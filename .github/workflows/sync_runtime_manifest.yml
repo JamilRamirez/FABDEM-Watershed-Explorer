@@ -1,0 +1,75 @@
+name: Sync runtime manifest
+
+on:
+  push:
+    branches:
+      - chore/sync-runtime-manifest
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: chore/sync-runtime-manifest
+          fetch-depth: 0
+
+      - name: Sync manifest from Runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            https://raw.githubusercontent.com/JamilRamirez/FABDEM-Watershed-Runtime/main/posit_data/remote_manifest.csv \
+            -o data/remote_manifest.csv
+
+      - name: Validate catalog invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import csv
+          from collections import Counter
+
+          path = 'data/remote_manifest.csv'
+          with open(path, newline='', encoding='utf-8-sig') as f:
+              rows = list(csv.DictReader(f))
+
+          assert len(rows) == 2319, f'Expected 2319 manifest rows, got {len(rows)}'
+          blocks = {r['BLOCK_ID'] for r in rows}
+          assert len(blocks) == 21, f'Expected 21 blocks, got {len(blocks)}'
+
+          counts = Counter(r['ASSET_TYPE'].strip().lower() for r in rows)
+          assert counts['reverse'] == 1128, counts
+          assert counts['stream'] == 1128, counts
+          assert counts['hydrography'] == 0, counts
+          assert counts['index_metadata'] == 21, counts
+          assert counts['run_info'] == 21, counts
+
+          bad = [r for r in rows if 'hydrography_block.gpkg' in r['RELATIVE_PATH']]
+          assert not bad, f'Found stale hydrography paths: {len(bad)}'
+
+          print('Manifest OK:', len(rows), 'rows;', len(blocks), 'blocks;', dict(counts))
+          PY
+
+          grep -q '^Manifest rows: 2319$' data/CATALOG_READY.txt
+          grep -q '^Blocks: 21$' data/CATALOG_READY.txt
+          grep -q '^Reverse stripes: 1128$' data/CATALOG_READY.txt
+          grep -q '^Stream stripes: 1128$' data/CATALOG_READY.txt
+
+      - name: Remove temporary workflow
+        shell: bash
+        run: rm .github/workflows/sync_runtime_manifest.yml
+
+      - name: Commit synchronized manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Sincroniza manifest del Explorer con Runtime'
+          git push origin HEAD:chore/sync-runtime-manifest
