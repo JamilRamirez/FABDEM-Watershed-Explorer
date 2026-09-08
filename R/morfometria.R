@@ -2,7 +2,7 @@
 # R/morfometria.R
 #
 # MODULO 02: MORFOMETRIA
-# v37: MORFOMETRIA CONSOLIDADA + LAMINA HIPSOMETRICA ESTABLE
+# v38: MORFOMETRIA CONSOLIDADA + EXPORTACION DEM WGS84/UTM
 # Graficas de relieve integradas directamente; sin parches en tiempo de ejecucion.
 # ============================================================
 #
@@ -1220,6 +1220,222 @@ morfometria <- local({
     ) <- "FABDEM_m"
 
     dem_utm
+  }
+
+
+
+  dem_basin_wgs84_for_download <- function(
+      dem_basin,
+      basin
+  ) {
+
+    if (
+      is.null(dem_basin) ||
+      is.null(basin)
+    ) {
+      stop(
+        "No hay DEM ni cuenca disponibles para exportar."
+      )
+    }
+
+    dem_crs <- sf::st_crs(
+      terra::crs(
+        dem_basin
+      )
+    )
+
+    if (is.na(
+      dem_crs
+    )) {
+      stop(
+        "El DEM activo no tiene un CRS válido."
+      )
+    }
+
+    target_crs <- sf::st_crs(
+      4326
+    )
+
+    dem_wgs84 <- if (isTRUE(
+      dem_crs == target_crs
+    )) {
+      dem_basin
+    } else {
+      terra::project(
+        dem_basin,
+        "EPSG:4326",
+        method = "bilinear",
+        threads = TRUE
+      )
+    }
+
+    basin_wgs84 <- sf::st_transform(
+      sf::st_make_valid(
+        basin
+      ),
+      4326
+    )
+
+    basin_wgs84 <- basin_wgs84[
+      !sf::st_is_empty(
+        basin_wgs84
+      ),
+      ,
+      drop = FALSE
+    ]
+
+    if (nrow(
+      basin_wgs84
+    ) == 0L) {
+      stop(
+        "La cuenca WGS84 está vacía."
+      )
+    }
+
+    dem_wgs84 <- terra::crop(
+      dem_wgs84,
+      terra::vect(
+        basin_wgs84
+      ),
+      snap = "out"
+    )
+
+    dem_wgs84 <- terra::mask(
+      dem_wgs84,
+      terra::vect(
+        basin_wgs84
+      )
+    )
+
+    names(
+      dem_wgs84
+    ) <- "FABDEM_m"
+
+    dem_wgs84
+  }
+
+
+  dem_a3_wgs84_for_download <- function(
+      basin,
+      map_crs,
+      job_id
+  ) {
+
+    map_poly <- a3_extent_polygon(
+      basin = basin,
+      map_crs = map_crs
+    )
+
+    map_poly_wgs84 <- sf::st_transform(
+      map_poly,
+      4326
+    )
+
+    tile_index <- get_dem_tile_index()
+
+    selected <- select_dem_tiles(
+      basin = map_poly_wgs84,
+      tile_index = tile_index
+    )
+
+    paths <- vapply(
+      file.path(
+        DEM_DIR,
+        as.character(selected$RELATIVE_PATH)
+      ),
+      runtime_cache_file,
+      character(1)
+    )
+
+    missing <- paths[
+      !file.exists(
+        paths
+      )
+    ]
+
+    if (length(
+      missing
+    ) > 0L) {
+      stop(
+        paste0(
+          "Falta una tesela FABDEM necesaria para el DEM A3:\n",
+          missing[1]
+        )
+      )
+    }
+
+    if (length(
+      paths
+    ) == 1L) {
+      dem_source <- terra::rast(
+        paths
+      )
+    } else {
+      vrt_file <- file.path(
+        TERRA_TEMP,
+        paste0(
+          "morph_dem_a3_wgs84_",
+          job_id,
+          ".vrt"
+        )
+      )
+
+      dem_source <- terra::vrt(
+        paths,
+        filename = vrt_file,
+        overwrite = TRUE
+      )
+    }
+
+    source_crs <- sf::st_crs(
+      terra::crs(
+        dem_source
+      )
+    )
+
+    if (is.na(
+      source_crs
+    )) {
+      stop(
+        "Las teselas FABDEM no tienen un CRS válido."
+      )
+    }
+
+    source_window <- sf::st_transform(
+      map_poly_wgs84,
+      source_crs
+    )
+
+    dem_crop <- terra::crop(
+      dem_source,
+      terra::vect(
+        source_window
+      ),
+      snap = "out"
+    )
+
+    target_crs <- sf::st_crs(
+      4326
+    )
+
+    dem_wgs84 <- if (isTRUE(
+      source_crs == target_crs
+    )) {
+      dem_crop
+    } else {
+      terra::project(
+        dem_crop,
+        "EPSG:4326",
+        method = "bilinear",
+        threads = TRUE
+      )
+    }
+
+    names(
+      dem_wgs84
+    ) <- "FABDEM_m"
+
+    dem_wgs84
   }
 
 
@@ -6598,18 +6814,33 @@ morfometria <- local({
                 ),
                 shiny::div(
                   style = "display:flex;gap:8px;align-items:center;flex-wrap:wrap;",
+                  shiny::tags$span(
+                    "CRS DEM:"
+                  ),
+                  shiny::selectInput(
+                    ns(
+                      "crs_descarga_dem"
+                    ),
+                    label = NULL,
+                    choices = c(
+                      "UTM automática (m)" = "utm",
+                      "WGS84 / FABDEM (grados)" = "wgs84"
+                    ),
+                    selected = "utm",
+                    width = "220px"
+                  ),
                   shiny::downloadButton(
                     ns(
                       "descargar_dem_cuenca_utm"
                     ),
-                    "DEM recortado UTM",
+                    "DEM recortado",
                     class = "btn-default btn-sm"
                   ),
                   shiny::downloadButton(
                     ns(
                       "descargar_dem_utm"
                     ),
-                    "DEM mosaico UTM",
+                    "DEM mosaico A3",
                     class = "btn-default btn-sm"
                   ),
                   shiny::downloadButton(
@@ -11487,34 +11718,53 @@ morfometria <- local({
               result()
             )
 
-            epsg_value <- if (
-              !is.null(x_download) &&
-              !is.null(x_download$geom) &&
-              !is.null(x_download$geom$epsg)
+            crs_mode <- shiny::isolate(
+              input$crs_descarga_dem
+            )
+
+            if (
+              is.null(crs_mode) ||
+              !crs_mode %in% c("utm", "wgs84")
             ) {
-              as.integer(
-                x_download$geom$epsg
-              )
-            } else {
-              NA_integer_
+              crs_mode <- "utm"
             }
 
-            epsg_tag <- if (
-              is.finite(
+            if (identical(
+              crs_mode,
+              "utm"
+            )) {
+              epsg_value <- if (
+                !is.null(x_download) &&
+                !is.null(x_download$geom) &&
+                !is.null(x_download$geom$epsg)
+              ) {
+                as.integer(
+                  x_download$geom$epsg
+                )
+              } else {
+                NA_integer_
+              }
+
+              epsg_tag <- if (is.finite(
                 epsg_value
-              )
-            ) {
-              paste0(
-                "EPSG",
-                epsg_value,
-                "_"
-              )
+              )) {
+                paste0(
+                  "EPSG",
+                  epsg_value,
+                  "_"
+                )
+              } else {
+                ""
+              }
+
+              prefix <- "FABDEM_CUENCA_UTM_"
             } else {
-              ""
+              epsg_tag <- "EPSG4326_"
+              prefix <- "FABDEM_CUENCA_WGS84_"
             }
 
             paste0(
-              "FABDEM_CUENCA_UTM_",
+              prefix,
               epsg_tag,
               format(
                 Sys.time(),
@@ -11533,24 +11783,65 @@ morfometria <- local({
             if (
               is.null(x_download) ||
               is.null(x_download$dem) ||
-              is.null(x_download$basin_sf) ||
-              is.null(x_download$geom) ||
-              is.null(x_download$geom$epsg)
+              is.null(x_download$basin_sf)
             ) {
               stop(
                 "No hay un DEM de cuenca listo para descargar."
               )
             }
 
+            crs_mode <- shiny::isolate(
+              input$crs_descarga_dem
+            )
+
+            if (
+              is.null(crs_mode) ||
+              !crs_mode %in% c("utm", "wgs84")
+            ) {
+              crs_mode <- "utm"
+            }
+
+            if (
+              identical(
+                crs_mode,
+                "utm"
+              ) &&
+              (
+                is.null(x_download$geom) ||
+                is.null(x_download$geom$epsg)
+              )
+            ) {
+              stop(
+                "No se pudo determinar el CRS UTM de la cuenca."
+              )
+            }
+
             dem_export <- shiny::withProgress(
-              message = "Reproyectando y recortando DEM de cuenca...",
+              message = if (identical(
+                crs_mode,
+                "utm"
+              )) {
+                "Preparando DEM recortado en UTM..."
+              } else {
+                "Preparando DEM recortado en WGS84..."
+              },
               value = 0.25,
               {
-                out <- dem_basin_utm_for_download(
-                  dem_basin = x_download$dem,
-                  basin = x_download$basin_sf,
-                  utm_epsg = x_download$geom$epsg
-                )
+                out <- if (identical(
+                  crs_mode,
+                  "utm"
+                )) {
+                  dem_basin_utm_for_download(
+                    dem_basin = x_download$dem,
+                    basin = x_download$basin_sf,
+                    utm_epsg = x_download$geom$epsg
+                  )
+                } else {
+                  dem_basin_wgs84_for_download(
+                    dem_basin = x_download$dem,
+                    basin = x_download$basin_sf
+                  )
+                }
 
                 shiny::setProgress(
                   value = 0.80,
@@ -11601,34 +11892,53 @@ morfometria <- local({
               result()
             )
 
-            epsg_value <- if (
-              !is.null(x_download) &&
-              !is.null(x_download$geom) &&
-              !is.null(x_download$geom$epsg)
+            crs_mode <- shiny::isolate(
+              input$crs_descarga_dem
+            )
+
+            if (
+              is.null(crs_mode) ||
+              !crs_mode %in% c("utm", "wgs84")
             ) {
-              as.integer(
-                x_download$geom$epsg
-              )
-            } else {
-              NA_integer_
+              crs_mode <- "utm"
             }
 
-            epsg_tag <- if (
-              is.finite(
+            if (identical(
+              crs_mode,
+              "utm"
+            )) {
+              epsg_value <- if (
+                !is.null(x_download) &&
+                !is.null(x_download$geom) &&
+                !is.null(x_download$geom$epsg)
+              ) {
+                as.integer(
+                  x_download$geom$epsg
+                )
+              } else {
+                NA_integer_
+              }
+
+              epsg_tag <- if (is.finite(
                 epsg_value
-              )
-            ) {
-              paste0(
-                "EPSG",
-                epsg_value,
-                "_"
-              )
+              )) {
+                paste0(
+                  "EPSG",
+                  epsg_value,
+                  "_"
+                )
+              } else {
+                ""
+              }
+
+              prefix <- "FABDEM_MOSAICO_A3_UTM_"
             } else {
-              ""
+              epsg_tag <- "EPSG4326_"
+              prefix <- "FABDEM_MOSAICO_A3_WGS84_"
             }
 
             paste0(
-              "FABDEM_MOSAICO_A3_UTM_",
+              prefix,
               epsg_tag,
               format(
                 Sys.time(),
@@ -11645,24 +11955,38 @@ morfometria <- local({
             )
 
             if (
-              is.null(
-                x_download
-              ) ||
-              is.null(
-                x_download$dem
-              ) ||
-              is.null(
-                x_download$basin_sf
-              ) ||
-              is.null(
-                x_download$geom
-              ) ||
-              is.null(
-                x_download$geom$epsg
-              )
+              is.null(x_download) ||
+              is.null(x_download$dem) ||
+              is.null(x_download$basin_sf)
             ) {
               stop(
                 "No hay un DEM morfométrico listo para descargar."
+              )
+            }
+
+            crs_mode <- shiny::isolate(
+              input$crs_descarga_dem
+            )
+
+            if (
+              is.null(crs_mode) ||
+              !crs_mode %in% c("utm", "wgs84")
+            ) {
+              crs_mode <- "utm"
+            }
+
+            if (
+              identical(
+                crs_mode,
+                "utm"
+              ) &&
+              (
+                is.null(x_download$geom) ||
+                is.null(x_download$geom$epsg)
+              )
+            ) {
+              stop(
+                "No se pudo determinar el CRS UTM de la cuenca."
               )
             }
 
@@ -11693,15 +12017,33 @@ morfometria <- local({
             )
 
             dem_export <- shiny::withProgress(
-              message = "Preparando DEM A3 en UTM...",
+              message = if (identical(
+                crs_mode,
+                "utm"
+              )) {
+                "Preparando DEM A3 en UTM..."
+              } else {
+                "Preparando DEM A3 en WGS84..."
+              },
               value = 0.15,
               {
-                out <- dem_a3_utm_for_download(
-                  basin = x_download$basin_sf,
-                  map_crs = map_crs,
-                  utm_epsg = x_download$geom$epsg,
-                  job_id = job_id
-                )
+                out <- if (identical(
+                  crs_mode,
+                  "utm"
+                )) {
+                  dem_a3_utm_for_download(
+                    basin = x_download$basin_sf,
+                    map_crs = map_crs,
+                    utm_epsg = x_download$geom$epsg,
+                    job_id = job_id
+                  )
+                } else {
+                  dem_a3_wgs84_for_download(
+                    basin = x_download$basin_sf,
+                    map_crs = map_crs,
+                    job_id = job_id
+                  )
+                }
 
                 shiny::setProgress(
                   value = 0.80,
@@ -11727,17 +12069,9 @@ morfometria <- local({
             )
 
             if (
-              !file.exists(
-                file
-              ) ||
-              !is.finite(
-                file.info(
-                  file
-                )$size
-              ) ||
-              file.info(
-                file
-              )$size <= 0
+              !file.exists(file) ||
+              !is.finite(file.info(file)$size) ||
+              file.info(file)$size <= 0
             ) {
               stop(
                 "El GeoTIFF del DEM no pudo generarse correctamente."
