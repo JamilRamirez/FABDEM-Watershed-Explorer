@@ -1,0 +1,12 @@
+TARGETS=11
+R/clima.R | shp_refs=6 | writer_calls=2 | crs_calls=2
+R/cobertura.R | shp_refs=6 | writer_calls=2 | crs_calls=2
+R/cuencas.R | shp_refs=6 | writer_calls=2 | crs_calls=2
+R/cum.R | shp_refs=6 | writer_calls=2 | crs_calls=2
+R/distritos.R | shp_refs=6 | writer_calls=2 | crs_calls=2
+R/geologia.R | shp_refs=6 | writer_calls=2 | crs_calls=2
+R/geomorfologia.R | shp_refs=6 | writer_calls=2 | crs_calls=2
+R/hidrogeologia.R | shp_refs=6 | writer_calls=2 | crs_calls=2
+R/poblados.R | shp_refs=6 | writer_calls=2 | crs_calls=2
+R/suelos.R | shp_refs=6 | writer_calls=2 | crs_calls=2
+R/vida.R | shp_refs=6 | writer_calls=2 | crs_calls=2

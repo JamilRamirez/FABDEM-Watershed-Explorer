@@ -1776,6 +1776,17 @@ suelos <- local({
           ),
 
 
+          shiny::selectInput(
+            ns("crs_descarga_shp"),
+            label = "CRS de los Shapefile",
+            choices = c(
+              "UTM automática (metros)" = "utm",
+              "WGS84 / EPSG:4326 (grados)" = "wgs84"
+            ),
+            selected = "utm",
+            width = "230px"
+          ),
+
           shiny::downloadButton(
 
             ns("descargar_shp_recortado"),
@@ -2086,6 +2097,10 @@ suelos <- local({
               ),
               target_file = file,
               bundle_stem = "suelos_normalizado_recortado"
+            ,
+              crs_mode = shiny::isolate(
+                input$crs_descarga_shp
+              )
             )
           }
         )
@@ -2118,6 +2133,10 @@ suelos <- local({
               ),
               target_file = file,
               bundle_stem = "suelos_normalizado_mosaico"
+            ,
+              crs_mode = shiny::isolate(
+                input$crs_descarga_shp
+              )
             )
           }
         )

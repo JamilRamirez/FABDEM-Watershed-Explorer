@@ -1795,6 +1795,17 @@ read_geomorphology_for_basin <- function(basin) {
           ),
 
 
+          shiny::selectInput(
+            ns("crs_descarga_shp"),
+            label = "CRS de los Shapefile",
+            choices = c(
+              "UTM automática (metros)" = "utm",
+              "WGS84 / EPSG:4326 (grados)" = "wgs84"
+            ),
+            selected = "utm",
+            width = "230px"
+          ),
+
           shiny::downloadButton(
 
             ns("descargar_shp_recortado"),
@@ -2105,6 +2116,10 @@ read_geomorphology_for_basin <- function(basin) {
               ),
               target_file = file,
               bundle_stem = "geomorfologia_normalizado_recortado"
+            ,
+              crs_mode = shiny::isolate(
+                input$crs_descarga_shp
+              )
             )
           }
         )
@@ -2137,6 +2152,10 @@ read_geomorphology_for_basin <- function(basin) {
               ),
               target_file = file,
               bundle_stem = "geomorfologia_normalizado_mosaico"
+            ,
+              crs_mode = shiny::isolate(
+                input$crs_descarga_shp
+              )
             )
           }
         )
