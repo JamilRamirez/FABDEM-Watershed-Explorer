@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import io
 import re
 import time
 import urllib.request
@@ -92,6 +91,48 @@ def fetch_bytes(url: str, *, range_bytes: int | None = None, attempts: int = 3) 
             if attempt < attempts:
                 time.sleep(attempt * 2)
     raise RuntimeError(f"No se pudo consultar {url}: {last_error}")
+
+
+def runtime_candidate_urls(base: str, relative_path: str) -> list[str]:
+    base = base.rstrip("/") + "/"
+    relative_path = relative_path.lstrip("/")
+    urls = [base + relative_path]
+
+    media_prefix = "https://media.githubusercontent.com/media/"
+    if base.startswith(media_prefix):
+        raw_base = "https://raw.githubusercontent.com/" + base[len(media_prefix) :]
+        raw_url = raw_base + relative_path
+        if raw_url not in urls:
+            urls.append(raw_url)
+
+    return urls
+
+
+def fetch_runtime_asset_prefix(base: str, relative_path: str) -> bytes:
+    errors: list[str] = []
+    for url in runtime_candidate_urls(base, relative_path):
+        try:
+            prefix = fetch_bytes(url, range_bytes=512, attempts=2)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+            continue
+
+        if not prefix:
+            errors.append(f"Respuesta vacía: {url}")
+            continue
+
+        if prefix.startswith(b"version https://git-lfs.github.com/spec/v1"):
+            errors.append(f"Puntero Git LFS, no contenido: {url}")
+            continue
+
+        return prefix
+
+    fail(
+        "No se pudo obtener un asset Runtime utilizable siguiendo el mismo "
+        "fallback media/raw de config.R:\n"
+        + "\n".join(errors)
+    )
+    return b""  # unreachable, keeps type checkers happy
 
 
 def check_required_files() -> None:
@@ -290,14 +331,13 @@ def check_runtime_canonical(local_rows: list[dict[str, str]], sources: dict[str,
         ]
         if not candidates:
             fail(f"No hay assets para muestrear: {asset_type}")
+
         row = candidates[0] if asset_type in {"index_metadata", "reverse"} else candidates[-1]
-        base = sources[row["SOURCE_ID"].strip()].rstrip("/") + "/"
-        url = base + row["RELATIVE_PATH"].strip()
-        prefix = fetch_bytes(url, range_bytes=512)
+        source_id = row["SOURCE_ID"].strip()
+        relative_path = row["RELATIVE_PATH"].strip()
+        prefix = fetch_runtime_asset_prefix(sources[source_id], relative_path)
         if not prefix:
-            fail(f"Asset Runtime vacío o inaccesible: {url}")
-        if prefix.startswith(b"version https://git-lfs.github.com/spec/v1"):
-            fail(f"El Runtime devolvió un puntero Git LFS, no el asset real: {url}")
+            fail(f"Asset Runtime vacío: {relative_path}")
 
 
 def main() -> None:
