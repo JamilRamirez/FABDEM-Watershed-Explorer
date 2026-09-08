@@ -5585,12 +5585,98 @@ zip_vector_export_files <- function(
 write_shapefile_zip_bundle <- function(
     layers,
     target_file,
-    bundle_stem = "capa_normalizada"
+    bundle_stem = "capa_normalizada",
+    crs_mode = "utm"
 ) {
 
   if (!is.list(layers) || length(layers) < 1L) {
     stop("No se recibieron capas para exportar.")
   }
+
+  crs_mode <- match.arg(
+    as.character(crs_mode)[1],
+    c(
+      "utm",
+      "wgs84"
+    )
+  )
+
+  valid_layer_ids <- which(
+    vapply(
+      layers,
+      function(x) {
+        inherits(x, "sf") &&
+          nrow(x) > 0L &&
+          !is.na(sf::st_crs(x))
+      },
+      logical(1)
+    )
+  )
+
+  if (length(valid_layer_ids) < 1L) {
+    stop("No hay capas sf con CRS valido para exportar.")
+  }
+
+  reference_layer <- vector_export_clean_sf(
+    layers[[valid_layer_ids[1L]]]
+  )
+
+  reference_wgs84 <- sf::st_transform(
+    reference_layer,
+    4326
+  )
+
+  target_epsg <- if (identical(crs_mode, "wgs84")) {
+    4326L
+  } else {
+    center_geom <- suppressWarnings(
+      sf::st_point_on_surface(
+        sf::st_union(
+          sf::st_geometry(reference_wgs84)
+        )
+      )
+    )
+
+    center_xy <- sf::st_coordinates(center_geom)
+
+    if (
+      nrow(center_xy) < 1L ||
+      !all(is.finite(center_xy[1L, c("X", "Y")]))
+    ) {
+      stop("No se pudo determinar la zona UTM para el Shapefile tematico.")
+    }
+
+    as.integer(
+      utm_epsg_point(
+        lon = center_xy[1L, "X"],
+        lat = center_xy[1L, "Y"]
+      )
+    )
+  }
+
+  layers <- lapply(
+    layers,
+    function(x) {
+      if (
+        is.null(x) ||
+        !inherits(x, "sf") ||
+        nrow(x) < 1L
+      ) {
+        return(x)
+      }
+
+      x <- vector_export_clean_sf(x)
+
+      if (nrow(x) < 1L) {
+        return(x)
+      }
+
+      sf::st_transform(
+        x,
+        target_epsg
+      )
+    }
+  )
 
   layer_names <- names(layers)
 
