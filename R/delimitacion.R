@@ -2,7 +2,7 @@
 # R/delimitacion.R
 #
 # MODULO 01: DELIMITACION
-# v4: admite cuenca delimitada o importada, expone origen y permite exportar KML/KMZ/GPKG/SHP ZIP
+# v5: admite cuenca delimitada o importada y permite exportar GPKG/SHP en WGS84 o UTM; KML/KMZ en WGS84
 # ============================================================
 #
 # Interfaz deliberadamente minima:
@@ -770,6 +770,88 @@ delimitacion <- local({
   }
 
 
+
+  project_basin_export_crs <- function(
+      x,
+      crs_mode = c(
+        "utm",
+        "wgs84"
+      )
+  ) {
+
+    crs_mode <- match.arg(
+      crs_mode
+    )
+
+    x_wgs84 <- sf::st_transform(
+      x,
+      4326
+    )
+
+    if (identical(
+      crs_mode,
+      "wgs84"
+    )) {
+      return(
+        list(
+          data = x_wgs84,
+          epsg = 4326L,
+          tag = "WGS84"
+        )
+      )
+    }
+
+    center_geom <- suppressWarnings(
+      sf::st_point_on_surface(
+        sf::st_union(
+          sf::st_geometry(
+            x_wgs84
+          )
+        )
+      )
+    )
+
+    xy <- sf::st_coordinates(
+      center_geom
+    )
+
+    if (
+      nrow(xy) < 1L ||
+      !all(
+        is.finite(
+          xy[1, c(
+            "X",
+            "Y"
+          )]
+        )
+      )
+    ) {
+      stop(
+        "No se pudo determinar el centro de la cuenca para seleccionar la zona UTM."
+      )
+    }
+
+    epsg <- as.integer(
+      utm_epsg_point(
+        lon = xy[1, "X"],
+        lat = xy[1, "Y"]
+      )
+    )
+
+    list(
+      data = sf::st_transform(
+        x_wgs84,
+        epsg
+      ),
+      epsg = epsg,
+      tag = paste0(
+        "EPSG",
+        epsg
+      )
+    )
+  }
+
+
   writable_sf_driver <- function(
       preferred,
       fallback = NULL
@@ -930,7 +1012,8 @@ delimitacion <- local({
       format,
       target_file,
       basin_label = NULL,
-      basin_source = NULL
+      basin_source = NULL,
+      crs_mode = "utm"
   ) {
 
     format <- match.arg(
@@ -949,6 +1032,24 @@ delimitacion <- local({
       basin_label = basin_label,
       basin_source = basin_source
     )
+
+
+    crs_mode <- match.arg(
+      crs_mode,
+      c(
+        "utm",
+        "wgs84"
+      )
+    )
+
+
+    projected_export <- project_basin_export_crs(
+      x = x,
+      crs_mode = crs_mode
+    )
+
+
+    x <- projected_export$data
 
 
     stem <- export_safe_stem(
@@ -1465,9 +1566,21 @@ delimitacion <- local({
             shiny::div(
               class = "coord-note",
               paste0(
-                "KML y KMZ se exportan en WGS84. ",
-                "GeoPackage y Shapefile conservan el CRS de la cuenca activa."
+                "GeoPackage y Shapefile pueden descargarse en UTM automática o WGS84. ",
+                "KML y KMZ se exportan siempre en WGS84."
               )
+            ),
+
+            shiny::selectInput(
+              session$ns(
+                "crs_exportacion"
+              ),
+              label = "Sistema de coordenadas",
+              choices = c(
+                "UTM automática (metros)" = "utm",
+                "WGS84 / EPSG:4326 (grados)" = "wgs84"
+              ),
+              selected = "utm"
             ),
 
             shiny::selectInput(
@@ -1518,9 +1631,46 @@ delimitacion <- local({
             }
 
 
+            crs_mode <- input$crs_exportacion
+
+
+            if (
+              is.null(
+                crs_mode
+              ) ||
+              !crs_mode %in%
+                c(
+                  "utm",
+                  "wgs84"
+                )
+            ) {
+              crs_mode <- "utm"
+            }
+
+
+            if (format_value %in%
+              c(
+                "kml",
+                "kmz"
+              )
+            ) {
+              crs_mode <- "wgs84"
+            }
+
+
             stem <- export_safe_stem(
               basin_label_result()
             )
+
+
+            crs_suffix <- if (identical(
+              crs_mode,
+              "utm"
+            )) {
+              "_UTM"
+            } else {
+              "_WGS84"
+            }
 
 
             extension <- switch(
@@ -1534,6 +1684,7 @@ delimitacion <- local({
 
             paste0(
               stem,
+              crs_suffix,
               extension
             )
           },
@@ -1584,6 +1735,35 @@ delimitacion <- local({
             }
 
 
+            crs_mode <- shiny::isolate(
+              input$crs_exportacion
+            )
+
+
+            if (
+              is.null(
+                crs_mode
+              ) ||
+              !crs_mode %in%
+                c(
+                  "utm",
+                  "wgs84"
+                )
+            ) {
+              crs_mode <- "utm"
+            }
+
+
+            if (format_value %in%
+              c(
+                "kml",
+                "kmz"
+              )
+            ) {
+              crs_mode <- "wgs84"
+            }
+
+
             write_basin_export(
               basin = basin_now,
               format = format_value,
@@ -1593,7 +1773,8 @@ delimitacion <- local({
               ),
               basin_source = shiny::isolate(
                 basin_source_result()
-              )
+              ),
+              crs_mode = crs_mode
             )
           }
         )
