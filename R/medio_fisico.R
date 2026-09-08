@@ -6,6 +6,19 @@
 # v4: Geologia + Geomorfologia + Suelos + Hidrogeologia
 # ============================================================
 
+
+# Morfometria ya fue cargada por app.R. En este punto todos los
+# modulos base existen y aun no se ha construido la UI, por lo que
+# podemos sustituir de forma segura solo las funciones graficas de
+# relieve y conservar intacta la logica hidrologica/morfometrica.
+source(
+  file.path("R", "morfometria_graficos_v36.R"),
+  local = TRUE,
+  encoding = "UTF-8",
+  chdir = FALSE
+)
+
+
 medio_fisico <- local({
 
   ui <- function(id) {
