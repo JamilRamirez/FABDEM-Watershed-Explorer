@@ -1,0 +1,56 @@
+name: FABDEM Ambiguity Choice Real QA
+
+on:
+  push:
+    branches:
+      - 'qa/ambiguity-choice-real-*'
+    paths:
+      - 'tests/qa/run_ambiguity_choice_qa.R'
+      - '.github/workflows/ambiguity-choice-real-qa.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fabdem-ambiguity-real-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ambiguity-real:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.6.0'
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::shiny
+            any::leaflet
+            any::sf
+            any::terra
+            any::DT
+            any::readxl
+          cache-version: 3
+          install-pandoc: false
+          install-quarto: false
+
+      - name: Run real ambiguity QA
+        env:
+          CI: 'true'
+        run: Rscript tests/qa/run_ambiguity_choice_qa.R
+
+      - name: Upload QA results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ambiguity-choice-real-qa
+          path: qa_results/ambiguity-choice/
+          if-no-files-found: warn
+          retention-days: 7
