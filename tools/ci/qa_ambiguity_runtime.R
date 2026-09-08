@@ -7,6 +7,12 @@ if (length(missing)) stop('Faltan paquetes: ', paste(missing, collapse=', '))
 app_env <- new.env(parent = globalenv())
 source('app.R', local = app_env, echo = FALSE, print.eval = FALSE, encoding = 'UTF-8')
 
+module_env <- environment(app_env$delimitacion$server)
+if (is.null(module_env) || !exists('find_ambiguity_options', envir = module_env, inherits = TRUE)) {
+  stop('No se pudo acceder al detector interno find_ambiguity_options del modulo delimitacion.')
+}
+ambiguity_fun <- get('find_ambiguity_options', envir = module_env, inherits = TRUE)
+
 cases <- data.frame(
   name = c('Socsi', 'Huaycoloro', 'Chira_Sullana', 'Napo_Mazan_DHN'),
   lon = c(-76.1945000, -76.9520300, -80.6911111, -73.0916944),
@@ -31,7 +37,7 @@ for (kk in seq_len(nrow(cases))) {
     block_id <- as.character(block_row[['BLOCK_ID']][1])
     app_env$load_block_if_needed(block_id = block_id, block_cache = block_cache)
 
-    detected <- find_ambiguity_options(
+    detected <- ambiguity_fun(
       lon = case$lon,
       lat = case$lat,
       radius_m = app_env$DEFAULT_SNAP_RADIUS_M,
