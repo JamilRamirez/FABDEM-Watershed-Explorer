@@ -3178,6 +3178,11 @@ delimitacion <- local({
                     }
 
 
+                    trace_cell_count <- as.double(
+                      trace$n_cells
+                    )
+
+
                     rm(
                       trace
                     )
@@ -3202,7 +3207,8 @@ delimitacion <- local({
 
                     basin_sf <- polygonize_basin(
                       basin_tif,
-                      basin_gpkg
+                      basin_gpkg,
+                      expected_cells = trace_cell_count
                     )
 
 
