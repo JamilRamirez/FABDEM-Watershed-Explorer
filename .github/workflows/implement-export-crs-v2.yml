@@ -1,0 +1,28 @@
+name: Implement export CRS v2
+
+on:
+  push:
+    branches: [feature/export-crs-options]
+    paths:
+      - .github/workflows/implement-export-crs-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/export-crs-options
+      - name: Apply patch
+        run: python3 scripts/patch_export_crs.py
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add R/delimitacion.R R/morfometria.R
+          git diff --cached --check
+          git commit -m "Permite exportar DEM y cuenca en WGS84 o UTM"
+          git push origin feature/export-crs-options
