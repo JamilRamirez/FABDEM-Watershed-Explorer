@@ -1,0 +1,48 @@
+name: FABDEM Quebradas Retest
+
+on:
+  push:
+    branches:
+      - 'qa/real-delineation-smoke-*'
+    paths:
+      - 'tests/qa/quebradas_retest.R'
+      - '.github/workflows/quebradas-retest.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  retest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.6.0'
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::shiny
+            any::leaflet
+            any::sf
+            any::terra
+            any::DT
+            any::readxl
+          cache-version: 2
+          install-pandoc: false
+          install-quarto: false
+      - name: Run quebradas retest
+        env:
+          CI: 'true'
+        run: Rscript tests/qa/quebradas_retest.R
+      - name: Upload retest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quebradas-retest
+          path: qa_results/quebradas_retest/
+          if-no-files-found: warn
+          retention-days: 7
