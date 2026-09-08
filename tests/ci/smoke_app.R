@@ -136,7 +136,6 @@ if (!file.exists(app_env$CATALOG_READY_FILE)) {
 }
 
 
-
 # ============================================================
 # Regresion: continuidad D8 en polygonizacion
 # ============================================================
@@ -276,7 +275,6 @@ if (!isTRUE(gap_failed)) {
   )
 }
 
-
 # Fuerza la ruta usada para rasters muy grandes: se omite patches(),
 # pero la QA vectorial final debe seguir rechazando cualquier salto.
 gap_failed_vector <- FALSE
@@ -313,6 +311,117 @@ unlink(
   ),
   force = TRUE
 )
+
+
+# ============================================================
+# Regresion: seleccion progresiva del outlet
+# ============================================================
+# El fallback debe detenerse en el primer radio con red, permitir
+# offsets propios de rios anchos y rechazar dos ramas realmente
+# distintas cuando sus distancias son casi iguales.
+
+radii_test <- app_env$snap_progressive_radii(1500)
+
+if (!identical(radii_test, c(120, 250, 500, 1000, 1500))) {
+  stop("Regresion snap: secuencia de radios progresivos inesperada.")
+}
+
+# Quebrada a 70 m y rio principal a 600 m: debe elegir la quebrada
+# en el primer radio y nunca alcanzar el rio lejano.
+candidates_tributary <- data.frame(
+  cell = c(101, 9001),
+  distance_m = c(70, 600)
+)
+
+choice_tributary <- app_env$snap_select_progressive_candidate(
+  candidates = candidates_tributary,
+  radii_m = radii_test,
+  grid_ncols = 100
+)
+
+if (
+  !identical(choice_tributary$status, "ok") ||
+  choice_tributary$radius_m != 120 ||
+  choice_tributary$winner_index != 1
+) {
+  stop("Regresion snap: no priorizo la quebrada cercana en el primer radio.")
+}
+
+# Rio ancho: si el primer eje hidrologico aparece a 330 m, debe
+# resolverse al llegar al radio de 500 m.
+candidates_wide_river <- data.frame(
+  cell = 5050,
+  distance_m = 330
+)
+
+choice_wide_river <- app_env$snap_select_progressive_candidate(
+  candidates = candidates_wide_river,
+  radii_m = radii_test,
+  grid_ncols = 100
+)
+
+if (
+  !identical(choice_wide_river$status, "ok") ||
+  choice_wide_river$radius_m != 500 ||
+  choice_wide_river$winner_index != 1
+) {
+  stop("Regresion snap: no resolvio un rio ancho con offset de 330 m.")
+}
+
+# Dos componentes distintos a 105 y 112 m: no debe adivinar.
+candidates_ambiguous <- data.frame(
+  cell = c(101, 9900),
+  distance_m = c(105, 112)
+)
+
+choice_ambiguous <- app_env$snap_select_progressive_candidate(
+  candidates = candidates_ambiguous,
+  radii_m = radii_test,
+  grid_ncols = 100
+)
+
+if (!identical(choice_ambiguous$status, "ambiguous")) {
+  stop("Regresion snap: dos cauces casi equidistantes no fueron marcados como ambiguos.")
+}
+
+# Dos componentes a 80 y 260 m: el cercano es claramente dominante.
+candidates_clear <- data.frame(
+  cell = c(101, 9900),
+  distance_m = c(80, 260)
+)
+
+choice_clear <- app_env$snap_select_progressive_candidate(
+  candidates = candidates_clear,
+  radii_m = radii_test,
+  grid_ncols = 100
+)
+
+if (
+  !identical(choice_clear$status, "ok") ||
+  choice_clear$radius_m != 120 ||
+  choice_clear$winner_index != 1
+) {
+  stop("Regresion snap: un candidato claramente mas cercano no fue seleccionado.")
+}
+
+# Varias celdas contiguas del mismo cauce no son dos alternativas.
+candidates_same_stream <- data.frame(
+  cell = c(101, 102, 103, 104),
+  distance_m = c(105, 108, 112, 118)
+)
+
+choice_same_stream <- app_env$snap_select_progressive_candidate(
+  candidates = candidates_same_stream,
+  radii_m = radii_test,
+  grid_ncols = 100
+)
+
+if (
+  !identical(choice_same_stream$status, "ok") ||
+  choice_same_stream$winner_index != 1
+) {
+  stop("Regresion snap: celdas del mismo cauce fueron confundidas con ramas ambiguas.")
+}
 
 
 cat(
