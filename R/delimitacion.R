@@ -1369,120 +1369,22 @@ delimitacion <- local({
   # ==========================================================
   # RESOLUCION EXPLICITA DE AMBIGUEDAD HIDROLOGICA
   # ==========================================================
+  # Principio:
+  # - primero se obtiene el snap estable;
+  # - una confluencia solo es ambigua si DOS caminos D8 asociados
+  #   al entorno inmediato del clic convergen cerca del clic;
+  # - para rios anchos/multicanal no se usan componentes espaciales:
+  #   se comparan caminos D8, aunque pertenezcan a una misma red;
+  # - celdas sobre la misma trayectoria se colapsan como una sola
+  #   alternativa.
 
-  AMBIGUITY_JUNCTION_RADIUS_M <- 450
-  AMBIGUITY_WIDE_TRIGGER_M <- 350
-  AMBIGUITY_WIDE_SCAN_M <- 3000
+  AMBIGUITY_JUNCTION_MAX_M <- 450
+  AMBIGUITY_JUNCTION_MARGIN_M <- 120
+  AMBIGUITY_WIDE_TRIGGER_M <- 300
+  AMBIGUITY_WIDE_SCAN_M <- 2200
+  AMBIGUITY_WIDE_PATH_M <- 6000
+  AMBIGUITY_WIDE_MIN_PARALLEL <- 0.20
   AMBIGUITY_MAX_OPTIONS <- 3L
-
-
-  ambiguity_reverse_parent_cells <- function(
-      reverse_cache,
-      cell
-  ) {
-
-    nc <- as.double(reverse_cache$metadata$ncols)
-    nr <- as.double(reverse_cache$metadata$nrows)
-    cell <- as.double(cell)
-
-    row <- floor((cell - 1) / nc) + 1
-    col <- ((cell - 1) %% nc) + 1
-
-    value <- get_reverse_values(
-      reverse_cache,
-      cell
-    )
-
-    if (
-      length(value) != 1L ||
-      !is.finite(value)
-    ) {
-      return(numeric(0))
-    }
-
-    cells <- c(
-      cell - nc - 1,
-      cell - nc,
-      cell - nc + 1,
-      cell - 1,
-      cell + 1,
-      cell + nc - 1,
-      cell + nc,
-      cell + nc + 1
-    )
-
-    bits <- c(
-      1L, 2L, 4L, 8L,
-      16L, 32L, 64L, 128L
-    )
-
-    valid <- c(
-      row > 1 && col > 1,
-      row > 1,
-      row > 1 && col < nc,
-      col > 1,
-      col < nc,
-      row < nr && col > 1,
-      row < nr,
-      row < nr && col < nc
-    )
-
-    keep <- valid &
-      bitwAnd(
-        as.integer(value),
-        bits
-      ) != 0L
-
-    as.double(cells[keep])
-  }
-
-
-  ambiguity_stream_parent_cells <- function(
-      reverse_cache,
-      cell,
-      grid_template,
-      stream_cache,
-      stripe_rows,
-      n_stripes,
-      threshold_cells
-  ) {
-
-    parents <- ambiguity_reverse_parent_cells(
-      reverse_cache,
-      cell
-    )
-
-    if (length(parents) == 0L) {
-      return(numeric(0))
-    }
-
-    keep <- vapply(
-      parents,
-      function(parent_cell) {
-
-        stream_value <- snap_stream_value_at_cell(
-          cell = parent_cell,
-          grid_template = grid_template,
-          stream_cache = stream_cache,
-          stripe_rows = stripe_rows,
-          n_stripes = n_stripes
-        )
-
-        isTRUE(
-          is.finite(stream_value) &&
-          stream_value > 0 &&
-          snap_upstream_reaches_threshold(
-            reverse_cache = reverse_cache,
-            outlet_cell = parent_cell,
-            threshold_cells = threshold_cells
-          )
-        )
-      },
-      logical(1)
-    )
-
-    as.double(parents[keep])
-  }
 
 
   ambiguity_snap_from_cell <- function(
@@ -1529,9 +1431,7 @@ delimitacion <- local({
       lat = lat,
       outlet_cell = outlet_cell,
       grid_template = grid_template,
-      grid_crs = sf::st_crs(
-        terra::crs(grid_template)
-      ),
+      grid_crs = sf::st_crs(terra::crs(grid_template)),
       stream_value = stream_value,
       mode = mode
     )
@@ -1541,9 +1441,169 @@ delimitacion <- local({
   }
 
 
+  ambiguity_downstream_path <- function(
+      start_cell,
+      reverse_cache,
+      grid_template,
+      click_lon,
+      click_lat,
+      max_distance_m = 1500,
+      max_steps = 256L
+  ) {
+
+    grid_crs <- sf::st_crs(terra::crs(grid_template))
+    epsg <- utm_epsg_point(click_lon, click_lat)
+
+    click_wgs <- sf::st_sfc(
+      sf::st_point(c(click_lon, click_lat)),
+      crs = 4326
+    )
+    click_xy <- as.numeric(
+      sf::st_coordinates(sf::st_transform(click_wgs, epsg))[1, ]
+    )
+
+    current <- as.double(start_cell)
+    current_xy <- snap_cell_utm_xy(
+      cell = current,
+      grid_template = grid_template,
+      grid_crs = grid_crs,
+      epsg = epsg
+    )
+
+    cells <- current
+    along_m <- 0
+    click_distance_m <- sqrt(sum((current_xy - click_xy)^2))
+    xy <- matrix(current_xy, nrow = 1)
+    seen <- new.env(hash = TRUE, parent = emptyenv())
+    assign(as.character(current), TRUE, envir = seen)
+
+    for (step in seq_len(max_steps)) {
+      next_cell <- snap_downstream_cell(reverse_cache, current)
+
+      if (!is.finite(next_cell)) {
+        break
+      }
+
+      key <- as.character(next_cell)
+      if (exists(key, envir = seen, inherits = FALSE)) {
+        break
+      }
+      assign(key, TRUE, envir = seen)
+
+      next_xy <- snap_cell_utm_xy(
+        cell = next_cell,
+        grid_template = grid_template,
+        grid_crs = grid_crs,
+        epsg = epsg
+      )
+
+      step_m <- sqrt(sum((next_xy - current_xy)^2))
+      if (!is.finite(step_m)) {
+        break
+      }
+
+      new_along <- tail(along_m, 1) + step_m
+      if (new_along > max_distance_m) {
+        break
+      }
+
+      cells <- c(cells, as.double(next_cell))
+      along_m <- c(along_m, new_along)
+      click_distance_m <- c(
+        click_distance_m,
+        sqrt(sum((next_xy - click_xy)^2))
+      )
+      xy <- rbind(xy, next_xy)
+
+      current <- as.double(next_cell)
+      current_xy <- next_xy
+    }
+
+    list(
+      cells = cells,
+      along_m = along_m,
+      click_distance_m = click_distance_m,
+      xy = xy
+    )
+  }
+
+
+  ambiguity_direction_similarity <- function(path_a, path_b) {
+
+    direction <- function(path) {
+      if (is.null(path$xy) || nrow(path$xy) < 2L) {
+        return(c(NA_real_, NA_real_))
+      }
+      idx <- min(8L, nrow(path$xy))
+      as.numeric(path$xy[idx, ] - path$xy[1, ])
+    }
+
+    va <- direction(path_a)
+    vb <- direction(path_b)
+    na <- sqrt(sum(va^2))
+    nb <- sqrt(sum(vb^2))
+
+    if (!is.finite(na) || !is.finite(nb) || na <= 0 || nb <= 0) {
+      return(NA_real_)
+    }
+
+    max(-1, min(1, sum(va * vb) / (na * nb)))
+  }
+
+
+  ambiguity_thin_candidates <- function(
+      candidates,
+      grid_template,
+      lon,
+      lat,
+      min_separation_m = 90,
+      max_seeds = 36L
+  ) {
+
+    if (is.null(candidates) || nrow(candidates) <= 1L) {
+      return(candidates)
+    }
+
+    grid_crs <- sf::st_crs(terra::crs(grid_template))
+    epsg <- utm_epsg_point(lon, lat)
+
+    sf_candidates <- sf::st_as_sf(
+      candidates,
+      coords = c('x', 'y'),
+      crs = grid_crs,
+      remove = FALSE
+    )
+
+    xy <- sf::st_coordinates(sf::st_transform(sf_candidates, epsg))
+    ord <- order(candidates$distance_m)
+    keep <- integer(0)
+
+    for (idx in ord) {
+      if (length(keep) == 0L) {
+        keep <- idx
+      } else {
+        d <- sqrt(
+          (xy[keep, 1] - xy[idx, 1])^2 +
+          (xy[keep, 2] - xy[idx, 2])^2
+        )
+        if (all(d >= min_separation_m)) {
+          keep <- c(keep, idx)
+        }
+      }
+
+      if (length(keep) >= max_seeds) {
+        break
+      }
+    }
+
+    candidates[keep, , drop = FALSE]
+  }
+
+
   ambiguity_near_confluence <- function(
       lon,
       lat,
+      primary,
       grid_template,
       stream_cache,
       stripe_rows,
@@ -1552,136 +1612,165 @@ delimitacion <- local({
       threshold_cells
   ) {
 
+    primary_distance <- if (
+      !is.null(primary) && is.finite(primary$snap_distance_m)
+    ) primary$snap_distance_m else 0
+
+    merge_limit_m <- min(
+      AMBIGUITY_JUNCTION_MAX_M,
+      max(120, primary_distance + AMBIGUITY_JUNCTION_MARGIN_M)
+    )
+
+    seed_radius_m <- min(600, merge_limit_m + 180)
+
     candidates <- snap_collect_stream_candidates(
       lon = lon,
       lat = lat,
-      radius_m = AMBIGUITY_JUNCTION_RADIUS_M,
+      radius_m = seed_radius_m,
       grid_template = grid_template,
       stream_cache = stream_cache,
       stripe_rows = stripe_rows,
       n_stripes = n_stripes
     )
 
-    if (nrow(candidates) == 0L) {
+    if (nrow(candidates) < 2L) {
       return(NULL)
     }
 
-    probe <- seq_len(
-      min(
-        nrow(candidates),
-        500L
+    seeds <- ambiguity_thin_candidates(
+      candidates,
+      grid_template = grid_template,
+      lon = lon,
+      lat = lat,
+      min_separation_m = 75,
+      max_seeds = 28L
+    )
+
+    if (nrow(seeds) < 2L) {
+      return(NULL)
+    }
+
+    paths <- lapply(
+      seeds$cell,
+      function(cell) ambiguity_downstream_path(
+        start_cell = cell,
+        reverse_cache = reverse_cache,
+        grid_template = grid_template,
+        click_lon = lon,
+        click_lat = lat,
+        max_distance_m = 1600,
+        max_steps = 128L
       )
     )
 
-    for (idx in probe) {
+    best <- NULL
+    best_score <- Inf
 
-      junction_cell <- as.double(
-        candidates$cell[idx]
-      )
+    for (ii in seq_len(length(paths) - 1L)) {
+      for (jj in seq.int(ii + 1L, length(paths))) {
 
-      parents <- ambiguity_stream_parent_cells(
+        merge <- snap_ambiguity_first_merge(
+          paths[[ii]]$cells,
+          paths[[jj]]$cells
+        )
+
+        if (
+          is.null(merge) ||
+          isTRUE(merge$same_lineage) ||
+          merge$index_a <= 1L ||
+          merge$index_b <= 1L
+        ) {
+          next
+        }
+
+        merge_distance <- paths[[ii]]$click_distance_m[merge$index_a]
+
+        if (
+          !is.finite(merge_distance) ||
+          merge_distance > merge_limit_m
+        ) {
+          next
+        }
+
+        score <- merge_distance +
+          0.10 * (seeds$distance_m[ii] + seeds$distance_m[jj])
+
+        if (score < best_score) {
+          best_score <- score
+          best <- list(
+            ii = ii,
+            jj = jj,
+            merge = merge,
+            merge_distance_m = merge_distance
+          )
+        }
+      }
+    }
+
+    if (is.null(best)) {
+      return(NULL)
+    }
+
+    path_a <- paths[[best$ii]]
+    path_b <- paths[[best$jj]]
+
+    branch_a <- path_a$cells[best$merge$index_a - 1L]
+    branch_b <- path_b$cells[best$merge$index_b - 1L]
+    downstream <- snap_downstream_cell(reverse_cache, best$merge$cell)
+
+    option_cells <- c(branch_a, branch_b)
+    roles <- c('Rama aguas arriba 1', 'Rama aguas arriba 2')
+    modes <- c(
+      'AMBIGUOUS_CONFLUENCE_UPSTREAM',
+      'AMBIGUOUS_CONFLUENCE_UPSTREAM'
+    )
+
+    if (is.finite(downstream)) {
+      option_cells <- c(option_cells, downstream)
+      roles <- c(roles, 'Aguas abajo de la confluencia')
+      modes <- c(modes, 'AMBIGUOUS_CONFLUENCE_DOWNSTREAM')
+    }
+
+    options <- lapply(
+      seq_along(option_cells),
+      function(ii) ambiguity_snap_from_cell(
+        lon = lon,
+        lat = lat,
+        outlet_cell = option_cells[ii],
+        role = roles[ii],
+        mode = modes[ii],
         reverse_cache = reverse_cache,
-        cell = junction_cell,
         grid_template = grid_template,
         stream_cache = stream_cache,
         stripe_rows = stripe_rows,
         n_stripes = n_stripes,
         threshold_cells = threshold_cells
       )
+    )
 
-      if (length(parents) < 2L) {
-        next
-      }
+    options <- Filter(Negate(is.null), options)
 
-      options <- list()
-
-      for (ii in seq_len(
-        min(
-          2L,
-          length(parents)
-        )
-      )) {
-
-        option <- ambiguity_snap_from_cell(
-          lon = lon,
-          lat = lat,
-          outlet_cell = parents[ii],
-          role = paste0(
-            'Rama aguas arriba ',
-            ii
-          ),
-          mode = 'AMBIGUOUS_CONFLUENCE_UPSTREAM',
-          reverse_cache = reverse_cache,
-          grid_template = grid_template,
-          stream_cache = stream_cache,
-          stripe_rows = stripe_rows,
-          n_stripes = n_stripes,
-          threshold_cells = threshold_cells
-        )
-
-        if (!is.null(option)) {
-          options[[length(options) + 1L]] <- option
-        }
-      }
-
-      downstream <- snap_downstream_cell(
-        reverse_cache = reverse_cache,
-        cell = junction_cell
-      )
-
-      if (is.finite(downstream)) {
-
-        option <- ambiguity_snap_from_cell(
-          lon = lon,
-          lat = lat,
-          outlet_cell = downstream,
-          role = 'Aguas abajo de la confluencia',
-          mode = 'AMBIGUOUS_CONFLUENCE_DOWNSTREAM',
-          reverse_cache = reverse_cache,
-          grid_template = grid_template,
-          stream_cache = stream_cache,
-          stripe_rows = stripe_rows,
-          n_stripes = n_stripes,
-          threshold_cells = threshold_cells
-        )
-
-        if (!is.null(option)) {
-          options[[length(options) + 1L]] <- option
-        }
-      }
-
-      if (length(options) >= 2L) {
-
-        cells <- vapply(
-          options,
-          function(x) as.double(x$outlet_cell),
-          numeric(1)
-        )
-
-        options <- options[
-          !duplicated(cells)
-        ]
-
-        if (length(options) >= 2L) {
-          return(
-            list(
-              status = 'ambiguous',
-              reason = 'CONFLUENCE',
-              options = head(
-                options,
-                AMBIGUITY_MAX_OPTIONS
-              )
-            )
-          )
-        }
-      }
+    if (length(options) < 2L) {
+      return(NULL)
     }
 
-    NULL
+    cells <- vapply(options, function(x) as.double(x$outlet_cell), numeric(1))
+    options <- options[!duplicated(cells)]
+
+    if (length(options) < 2L) {
+      return(NULL)
+    }
+
+    list(
+      status = 'ambiguous',
+      reason = 'CONFLUENCE_D8_LOCAL',
+      merge_distance_m = best$merge_distance_m,
+      options = head(options, AMBIGUITY_MAX_OPTIONS)
+    )
   }
 
 
-  ambiguity_wide_components <- function(
+  ambiguity_wide_multichannel <- function(
       lon,
       lat,
       primary,
@@ -1715,60 +1804,120 @@ delimitacion <- local({
       return(NULL)
     }
 
-    component_id <- snap_stream_component_ids(
-      cells = candidates$cell,
-      grid_ncols = terra::ncol(grid_template)
+    seeds <- ambiguity_thin_candidates(
+      candidates,
+      grid_template = grid_template,
+      lon = lon,
+      lat = lat,
+      min_separation_m = 120,
+      max_seeds = 40L
     )
 
-    components <- unique(component_id)
-
-    if (length(components) < 2L) {
-      return(NULL)
-    }
-
-    best <- vapply(
-      components,
-      function(component_now) {
-        idx <- which(
-          component_id == component_now
-        )
-        idx[
-          which.min(
-            candidates$distance_m[idx]
-          )
-        ]
-      },
-      integer(1)
+    primary_path <- ambiguity_downstream_path(
+      start_cell = primary$outlet_cell,
+      reverse_cache = reverse_cache,
+      grid_template = grid_template,
+      click_lon = lon,
+      click_lat = lat,
+      max_distance_m = AMBIGUITY_WIDE_PATH_M,
+      max_steps = 256L
     )
 
-    best <- best[
-      order(
-        candidates$distance_m[best]
+    matches <- list()
+
+    for (ii in seq_len(nrow(seeds))) {
+
+      seed_cell <- as.double(seeds$cell[ii])
+      if (seed_cell == as.double(primary$outlet_cell)) {
+        next
+      }
+
+      path_now <- ambiguity_downstream_path(
+        start_cell = seed_cell,
+        reverse_cache = reverse_cache,
+        grid_template = grid_template,
+        click_lon = lon,
+        click_lat = lat,
+        max_distance_m = AMBIGUITY_WIDE_PATH_M,
+        max_steps = 256L
       )
-    ]
 
-    primary$ambiguity_role <- 'Cauce inicialmente seleccionado'
-    options <- list(primary)
-
-    for (idx in best) {
-
-      cell_now <- as.double(
-        candidates$cell[idx]
+      merge <- snap_ambiguity_first_merge(
+        primary_path$cells,
+        path_now$cells
       )
 
       if (
-        cell_now ==
-          as.double(primary$outlet_cell)
+        is.null(merge) ||
+        isTRUE(merge$same_lineage) ||
+        merge$index_a <= 1L ||
+        merge$index_b <= 1L
       ) {
         next
       }
 
-      option <- ambiguity_snap_from_cell(
+      merge_distance <- primary_path$click_distance_m[merge$index_a]
+      if (!is.finite(merge_distance) || merge_distance > AMBIGUITY_WIDE_PATH_M) {
+        next
+      }
+
+      parallel <- ambiguity_direction_similarity(primary_path, path_now)
+      if (is.finite(parallel) && parallel < AMBIGUITY_WIDE_MIN_PARALLEL) {
+        next
+      }
+
+      score <- seeds$distance_m[ii] +
+        0.20 * merge_distance +
+        if (is.finite(parallel)) 300 * (1 - parallel) else 150
+
+      matches[[length(matches) + 1L]] <- list(
+        seed_index = ii,
+        path = path_now,
+        merge = merge,
+        parallel = parallel,
+        merge_distance_m = merge_distance,
+        score = score
+      )
+    }
+
+    if (length(matches) == 0L) {
+      return(NULL)
+    }
+
+    ord <- order(vapply(matches, function(x) x$score, numeric(1)))
+    best <- matches[[ord[1]]]
+
+    alternative_cell <- best$path$cells[best$merge$index_b - 1L]
+    downstream_cell <- snap_downstream_cell(reverse_cache, best$merge$cell)
+
+    primary$ambiguity_role <- 'Cauce inicialmente seleccionado'
+    options <- list(primary)
+
+    alt <- ambiguity_snap_from_cell(
+      lon = lon,
+      lat = lat,
+      outlet_cell = alternative_cell,
+      role = 'Rama/cauce alternativo',
+      mode = 'AMBIGUOUS_WIDE_ALTERNATIVE',
+      reverse_cache = reverse_cache,
+      grid_template = grid_template,
+      stream_cache = stream_cache,
+      stripe_rows = stripe_rows,
+      n_stripes = n_stripes,
+      threshold_cells = threshold_cells
+    )
+
+    if (!is.null(alt)) {
+      options[[length(options) + 1L]] <- alt
+    }
+
+    if (is.finite(downstream_cell)) {
+      combined <- ambiguity_snap_from_cell(
         lon = lon,
         lat = lat,
-        outlet_cell = cell_now,
-        role = 'Cauce alternativo cercano',
-        mode = 'AMBIGUOUS_WIDE_MULTICHANNEL',
+        outlet_cell = downstream_cell,
+        role = 'Cauce combinado aguas abajo',
+        mode = 'AMBIGUOUS_WIDE_COMBINED',
         reverse_cache = reverse_cache,
         grid_template = grid_template,
         stream_cache = stream_cache,
@@ -1776,29 +1925,90 @@ delimitacion <- local({
         n_stripes = n_stripes,
         threshold_cells = threshold_cells
       )
-
-      if (is.null(option)) {
-        next
-      }
-
-      options[[length(options) + 1L]] <- option
-
-      if (length(options) >= AMBIGUITY_MAX_OPTIONS) {
-        break
+      if (!is.null(combined)) {
+        options[[length(options) + 1L]] <- combined
       }
     }
 
-    if (length(options) >= 2L) {
-      return(
-        list(
-          status = 'ambiguous',
-          reason = 'WIDE_OR_MULTICHANNEL',
-          options = options
-        )
+    cells <- vapply(options, function(x) as.double(x$outlet_cell), numeric(1))
+    options <- options[!duplicated(cells)]
+
+    if (length(options) < 2L) {
+      return(NULL)
+    }
+
+    list(
+      status = 'ambiguous',
+      reason = 'WIDE_MULTICHANNEL_D8',
+      merge_distance_m = best$merge_distance_m,
+      direction_similarity = best$parallel,
+      options = head(options, AMBIGUITY_MAX_OPTIONS)
+    )
+  }
+
+
+  ambiguity_from_near_tie <- function(
+      lon,
+      lat,
+      radius_m,
+      grid_template,
+      stream_cache,
+      stripe_rows,
+      n_stripes,
+      reverse_cache,
+      threshold_cells,
+      original_error
+  ) {
+
+    radii_m <- snap_progressive_radii(radius_m)
+    candidates <- snap_collect_stream_candidates(
+      lon = lon,
+      lat = lat,
+      radius_m = max(radii_m),
+      grid_template = grid_template,
+      stream_cache = stream_cache,
+      stripe_rows = stripe_rows,
+      n_stripes = n_stripes
+    )
+
+    choice <- snap_select_progressive_candidate(
+      candidates = candidates,
+      radii_m = radii_m,
+      grid_ncols = terra::ncol(grid_template)
+    )
+
+    if (!identical(choice$status, 'ambiguous')) {
+      stop(original_error)
+    }
+
+    idxs <- c(choice$winner_index, choice$alternative_index)
+    options <- lapply(
+      seq_along(idxs),
+      function(ii) ambiguity_snap_from_cell(
+        lon = lon,
+        lat = lat,
+        outlet_cell = candidates$cell[idxs[ii]],
+        role = paste0('Cauce candidato ', ii),
+        mode = 'AMBIGUOUS_NEAR_TIE',
+        reverse_cache = reverse_cache,
+        grid_template = grid_template,
+        stream_cache = stream_cache,
+        stripe_rows = stripe_rows,
+        n_stripes = n_stripes,
+        threshold_cells = threshold_cells
       )
+    )
+
+    options <- Filter(Negate(is.null), options)
+    if (length(options) < 2L) {
+      stop(original_error)
     }
 
-    NULL
+    list(
+      status = 'ambiguous',
+      reason = 'NEAR_TIE',
+      options = options
+    )
   }
 
 
@@ -1812,36 +2022,10 @@ delimitacion <- local({
       n_stripes
   ) {
 
-    block_id <- as.character(
-      stream_cache$block_id
-    )
-
-    meta <- get_block_metadata(
-      block_id
-    )
-
-    threshold_cells <- as.double(
-      meta[['STREAM_THRESHOLD_CELLS']][1]
-    )
-
-    reverse_cache <- new_snap_reverse_cache(
-      block_id
-    )
-
-    confluence <- ambiguity_near_confluence(
-      lon = lon,
-      lat = lat,
-      grid_template = grid_template,
-      stream_cache = stream_cache,
-      stripe_rows = stripe_rows,
-      n_stripes = n_stripes,
-      reverse_cache = reverse_cache,
-      threshold_cells = threshold_cells
-    )
-
-    if (!is.null(confluence)) {
-      return(confluence)
-    }
+    block_id <- as.character(stream_cache$block_id)
+    meta <- get_block_metadata(block_id)
+    threshold_cells <- as.double(meta[['STREAM_THRESHOLD_CELLS']][1])
+    reverse_cache <- new_snap_reverse_cache(block_id)
 
     primary <- tryCatch(
       snap_to_stream_stripes(
@@ -1857,9 +2041,7 @@ delimitacion <- local({
     )
 
     if (inherits(primary, 'error')) {
-
       message_text <- conditionMessage(primary)
-
       if (!grepl(
         'entre dos cauces hidrologicos distintos',
         message_text,
@@ -1868,79 +2050,46 @@ delimitacion <- local({
         stop(primary)
       }
 
-      radii_m <- snap_progressive_radii(
-        radius_m
-      )
-
-      candidates <- snap_collect_stream_candidates(
-        lon = lon,
-        lat = lat,
-        radius_m = max(radii_m),
-        grid_template = grid_template,
-        stream_cache = stream_cache,
-        stripe_rows = stripe_rows,
-        n_stripes = n_stripes
-      )
-
-      choice <- snap_select_progressive_candidate(
-        candidates = candidates,
-        radii_m = radii_m,
-        grid_ncols = terra::ncol(grid_template)
-      )
-
-      if (!identical(
-        choice$status,
-        'ambiguous'
-      )) {
-        stop(primary)
-      }
-
-      idxs <- c(
-        choice$winner_index,
-        choice$alternative_index
-      )
-
-      options <- lapply(
-        seq_along(idxs),
-        function(ii) {
-          ambiguity_snap_from_cell(
-            lon = lon,
-            lat = lat,
-            outlet_cell = candidates$cell[idxs[ii]],
-            role = paste0(
-              'Cauce candidato ',
-              ii
-            ),
-            mode = 'AMBIGUOUS_NEAR_TIE',
-            reverse_cache = reverse_cache,
-            grid_template = grid_template,
-            stream_cache = stream_cache,
-            stripe_rows = stripe_rows,
-            n_stripes = n_stripes,
-            threshold_cells = threshold_cells
-          )
-        }
-      )
-
-      options <- Filter(
-        Negate(is.null),
-        options
-      )
-
-      if (length(options) >= 2L) {
-        return(
-          list(
-            status = 'ambiguous',
-            reason = 'NEAR_TIE',
-            options = options
-          )
+      return(
+        ambiguity_from_near_tie(
+          lon = lon,
+          lat = lat,
+          radius_m = radius_m,
+          grid_template = grid_template,
+          stream_cache = stream_cache,
+          stripe_rows = stripe_rows,
+          n_stripes = n_stripes,
+          reverse_cache = reverse_cache,
+          threshold_cells = threshold_cells,
+          original_error = primary
         )
-      }
-
-      stop(primary)
+      )
     }
 
-    wide <- ambiguity_wide_components(
+    # Solo despues de resolver el snap principal se busca una
+    # confluencia ligada a SU entorno. Esto elimina falsos positivos
+    # provocados por cruces cercanos pero ajenos al clic.
+    confluence <- ambiguity_near_confluence(
+      lon = lon,
+      lat = lat,
+      primary = primary,
+      grid_template = grid_template,
+      stream_cache = stream_cache,
+      stripe_rows = stripe_rows,
+      n_stripes = n_stripes,
+      reverse_cache = reverse_cache,
+      threshold_cells = threshold_cells
+    )
+
+    if (!is.null(confluence)) {
+      return(confluence)
+    }
+
+    # Rios anchos y brazos trenzados: dos brazos pueden formar una
+    # sola componente espacial. Se comparan caminos D8 y se ofrece
+    # el brazo alternativo mas compatible, mas el cauce combinado
+    # aguas abajo cuando existe.
+    wide <- ambiguity_wide_multichannel(
       lon = lon,
       lat = lat,
       primary = primary,
