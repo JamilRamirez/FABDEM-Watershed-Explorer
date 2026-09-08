@@ -2916,6 +2916,359 @@ trace_upstream <- function(
 }
 
 
+
+# ============================================================
+# VALIDACION DE CONTINUIDAD D8 DEL RASTER DE CUENCA
+# ============================================================
+#
+# Una cuenca derivada de D8 puede conectarse por lados o por
+# esquinas. Antes de vectorizar se exige que todas sus celdas
+# formen UN SOLO componente usando vecindad de 8 celdas.
+#
+# Esto permite conexiones diagonales hidrologicamente validas,
+# pero rechaza cualquier salto real de una o mas celdas.
+# ============================================================
+
+validate_basin_raster_d8 <- function(
+    basin_tif,
+    expected_cells = NULL
+) {
+
+  if (!file_nonempty(
+    basin_tif
+  )) {
+    stop(
+      "No existe un raster de cuenca valido para control de continuidad D8."
+    )
+  }
+
+
+  r <- terra::rast(
+    basin_tif
+  )
+
+
+  actual_cells <- suppressWarnings(
+    as.double(
+      terra::global(
+        r,
+        "sum",
+        na.rm = TRUE
+      )[1, 1]
+    )
+  )
+
+
+  if (
+    !is.finite(actual_cells) ||
+    actual_cells < 1
+  ) {
+    stop(
+      "El raster de cuenca no contiene celdas validas."
+    )
+  }
+
+
+  if (
+    !is.null(expected_cells) &&
+    length(expected_cells) == 1L &&
+    is.finite(expected_cells)
+  ) {
+
+    expected_cells <- as.double(
+      expected_cells
+    )
+
+
+    if (!isTRUE(
+      actual_cells == expected_cells
+    )) {
+      stop(
+        paste0(
+          "FALLO DE MATERIALIZACION: el rastreo D8 produjo ",
+          format(expected_cells, big.mark = ",", scientific = FALSE),
+          " celdas, pero basin.tif contiene ",
+          format(actual_cells, big.mark = ",", scientific = FALSE),
+          ". La cuenca no sera vectorizada."
+        )
+      )
+    }
+  }
+
+
+  patch_file <- tempfile(
+    pattern = "basin_d8_patches_",
+    tmpdir = TERRA_TEMP,
+    fileext = ".tif"
+  )
+
+
+  on.exit(
+    unlink(
+      patch_file,
+      force = TRUE
+    ),
+    add = TRUE
+  )
+
+
+  patch_r <- terra::patches(
+    r,
+    directions = 8,
+    values = FALSE,
+    zeroAsNA = TRUE,
+    allowGaps = FALSE,
+    filename = patch_file,
+    overwrite = TRUE
+  )
+
+
+  n_patches <- suppressWarnings(
+    as.integer(
+      terra::global(
+        patch_r,
+        "max",
+        na.rm = TRUE
+      )[1, 1]
+    )
+  )
+
+
+  if (
+    !is.finite(n_patches) ||
+    n_patches != 1L
+  ) {
+    stop(
+      paste0(
+        "FALLO DE CONTINUIDAD D8: la cuenca contiene ",
+        if (is.finite(n_patches)) n_patches else "varios",
+        " componentes separados. Se detecto un salto real entre celdas y ",
+        "la geometria no sera generada."
+      )
+    )
+  }
+
+
+  list(
+    n_cells = actual_cells,
+    n_patches_8 = n_patches
+  )
+}
+
+
+# ============================================================
+# CIERRE VECTORIAL DE UNIONES DIAGONALES D8
+# ============================================================
+#
+# terra::as.polygons() disuelve bien vecinos por lado, pero una
+# cadena D8 que solo se toca por esquinas puede quedar como
+# MULTIPOLYGON de cuadrados. Una vez validado que el raster es
+# un unico componente 8-conectado, se aplica un cierre geometrico
+# de apenas 0.10 m en un CRS metrico global. Ese cierre une solo
+# contactos numericamente puntuales y no puede salvar un hueco de
+# una celda FABDEM (~30 m), que ya habria sido rechazado arriba.
+# ============================================================
+
+close_d8_diagonal_polygon <- function(
+    x,
+    bridge_m = 0.10
+) {
+
+  if (
+    is.null(x) ||
+    !inherits(x, "sf") ||
+    nrow(x) < 1L
+  ) {
+    stop(
+      "No hay geometria valida para cerrar conexiones diagonales D8."
+    )
+  }
+
+
+  source_crs <- sf::st_crs(
+    x
+  )
+
+
+  if (is.na(
+    source_crs
+  )) {
+    stop(
+      "La geometria de cuenca no tiene CRS durante el cierre D8."
+    )
+  }
+
+
+  x <- sf::st_make_valid(
+    x
+  )
+
+
+  merged <- suppressWarnings(
+    sf::st_union(
+      sf::st_geometry(
+        x
+      )
+    )
+  )
+
+
+  parts_before <- suppressWarnings(
+    sf::st_cast(
+      merged,
+      "POLYGON"
+    )
+  )
+
+
+  if (length(parts_before) <= 1L) {
+    return(
+      sf::st_sf(
+        geometry = merged
+      )
+    )
+  }
+
+
+  metric <- sf::st_transform(
+    sf::st_sf(
+      geometry = merged
+    ),
+    6933
+  )
+
+
+  area_before_m2 <- as.double(
+    sf::st_area(
+      metric
+    )
+  )
+
+
+  closed_metric <- suppressWarnings(
+    sf::st_buffer(
+      metric,
+      dist = bridge_m
+    )
+  )
+
+
+  closed_metric <- suppressWarnings(
+    sf::st_union(
+      closed_metric
+    )
+  )
+
+
+  closed_metric <- suppressWarnings(
+    sf::st_buffer(
+      closed_metric,
+      dist = -bridge_m
+    )
+  )
+
+
+  closed_metric <- sf::st_make_valid(
+    sf::st_sf(
+      geometry = closed_metric
+    )
+  )
+
+
+  closed_metric <- closed_metric[
+    !sf::st_is_empty(
+      closed_metric
+    ),
+    ,
+    drop = FALSE
+  ]
+
+
+  if (nrow(
+    closed_metric
+  ) < 1L) {
+    stop(
+      "El cierre de conexiones diagonales D8 produjo una geometria vacia."
+    )
+  }
+
+
+  closed_union <- suppressWarnings(
+    sf::st_union(
+      sf::st_geometry(
+        closed_metric
+      )
+    )
+  )
+
+
+  parts_after <- suppressWarnings(
+    sf::st_cast(
+      closed_union,
+      "POLYGON"
+    )
+  )
+
+
+  if (length(parts_after) != 1L) {
+    stop(
+      paste0(
+        "FALLO VECTORIAL D8: despues de cerrar contactos diagonales aun quedan ",
+        length(parts_after),
+        " poligonos separados. La cuenca no sera exportada."
+      )
+    )
+  }
+
+
+  area_after_m2 <- as.double(
+    sf::st_area(
+      sf::st_sf(
+        geometry = closed_union
+      )
+    )
+  )
+
+
+  area_delta_m2 <- abs(
+    area_after_m2 - area_before_m2
+  )
+
+
+  area_tolerance_m2 <- max(
+    10,
+    area_before_m2 * 1e-4
+  )
+
+
+  if (
+    !is.finite(area_delta_m2) ||
+    area_delta_m2 > area_tolerance_m2
+  ) {
+    stop(
+      paste0(
+        "FALLO VECTORIAL D8: el cierre diagonal alteraria el area en ",
+        format(round(area_delta_m2, 3), scientific = FALSE),
+        " m2, por encima de la tolerancia de seguridad."
+      )
+    )
+  }
+
+
+  closed_source <- sf::st_transform(
+    sf::st_sf(
+      geometry = closed_union
+    ),
+    source_crs
+  )
+
+
+  sf::st_make_valid(
+    closed_source
+  )
+}
+
+
 # ============================================================
 # ESCRIBIR BASIN.TIF SIN MATRIZ GIGANTE
 # ============================================================
@@ -3370,15 +3723,22 @@ write_basin_raster <- function(
 
 polygonize_basin <- function(
     basin_tif,
-    basin_gpkg
+    basin_gpkg,
+    expected_cells = NULL
 ) {
 
-  r <- rast(
+  qa <- validate_basin_raster_d8(
+    basin_tif = basin_tif,
+    expected_cells = expected_cells
+  )
+
+
+  r <- terra::rast(
     basin_tif
   )
 
 
-  p <- as.polygons(
+  p <- terra::as.polygons(
     r,
     dissolve = TRUE,
     values = FALSE,
@@ -3386,18 +3746,18 @@ polygonize_basin <- function(
   )
 
 
-  x <- st_as_sf(
+  x <- sf::st_as_sf(
     p
   )
 
 
-  x <- st_make_valid(
+  x <- sf::st_make_valid(
     x
   )
 
 
   x <- x[
-    !st_is_empty(
+    !sf::st_is_empty(
       x
     ),
     ,
@@ -3405,20 +3765,41 @@ polygonize_basin <- function(
   ]
 
 
-  if (file.exists(basin_gpkg)) {
+  if (nrow(
+    x
+  ) < 1L) {
+    stop(
+      "La polygonizacion de la cuenca produjo una geometria vacia."
+    )
+  }
 
+
+  x <- close_d8_diagonal_polygon(
+    x
+  )
+
+
+  if (file.exists(
+    basin_gpkg
+  )) {
     file.remove(
       basin_gpkg
     )
   }
 
 
-  st_write(
+  sf::st_write(
     x,
     basin_gpkg,
     layer = "basin",
     quiet = TRUE
   )
+
+
+  attr(
+    x,
+    "d8_contiguity_qa"
+  ) <- qa
 
 
   x
