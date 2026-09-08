@@ -6,10 +6,14 @@ options(
 )
 
 root <- normalizePath(
-  file.path(dirname(sys.frame(1)$ofile %||% "tests/ci/smoke_app.R"), "..", ".."),
+  ".",
   winslash = "/",
   mustWork = TRUE
 )
+
+if (!file.exists(file.path(root, "app.R"))) {
+  stop("Ejecuta este smoke test desde la raíz del repositorio.")
+}
 
 old_wd <- getwd()
 on.exit(setwd(old_wd), add = TRUE)
