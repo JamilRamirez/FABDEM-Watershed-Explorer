@@ -66,6 +66,22 @@ for (kk in seq_len(nrow(cases))) {
     large_area_est <- NA_real_
 
     if (identical(case$name, 'Napo_Mazan_DHN')) {
+      if (!identical(detected$reason, 'WIDE_MULTICHANNEL_D8')) {
+        stop(
+          'Napo_Mazan_DHN: se esperaba ambiguedad multicanal D8 y se obtuvo ',
+          detected$reason,
+          '.'
+        )
+      }
+
+      if (length(detected$options) != 3L) {
+        stop(
+          'Napo_Mazan_DHN: se esperaban tres opciones hidrologicas y se obtuvieron ',
+          length(detected$options),
+          '.'
+        )
+      }
+
       combined_idx <- grep(
         'combinado|aguas abajo',
         roles,
@@ -74,6 +90,10 @@ for (kk in seq_len(nrow(cases))) {
 
       if (length(combined_idx) == 0L) {
         stop('Napo_Mazan_DHN: el selector no produjo una opcion combinada aguas abajo.')
+      }
+
+      if (!any(grepl('alternativ', roles, ignore.case = TRUE))) {
+        stop('Napo_Mazan_DHN: el selector no produjo una rama/cauce alternativo.')
       }
 
       chosen_idx <- combined_idx[1]
@@ -87,7 +107,7 @@ for (kk in seq_len(nrow(cases))) {
         as.numeric(meta[['STREAM_THRESHOLD_CELLS']][1])
       large_area_est <- as.numeric(tr$n_cells) * km2_per_threshold_cell
 
-      if (!is.finite(large_area_est) || large_area_est < 50000) {
+      if (!is.finite(large_area_est) || large_area_est < 80000) {
         stop(
           'Napo_Mazan_DHN: la opcion combinada sigue siendo demasiado pequena: ',
           sprintf('%.1f km2', large_area_est)
@@ -115,6 +135,23 @@ for (kk in seq_len(nrow(cases))) {
         ' pero se obtuvo ', observed$status,
         ' (', observed$reason, ')'
       )
+    )
+  }
+
+  if (identical(case$expected, 'single') && observed$n_options != 1L) {
+    failures <- c(
+      failures,
+      paste0(case$name, ': un caso single debe producir exactamente una opcion.')
+    )
+  }
+
+  if (
+    identical(case$expected, 'ambiguous') &&
+    (observed$n_options < 2L || observed$n_options > 3L)
+  ) {
+    failures <- c(
+      failures,
+      paste0(case$name, ': un caso ambiguo debe producir entre dos y tres opciones.')
     )
   }
 
