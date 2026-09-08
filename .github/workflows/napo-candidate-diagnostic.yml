@@ -1,0 +1,48 @@
+name: FABDEM Napo Candidate Diagnostic
+
+on:
+  push:
+    branches:
+      - 'qa/real-delineation-smoke-*'
+    paths:
+      - 'tests/qa/napo_candidate_diagnostic.R'
+      - '.github/workflows/napo-candidate-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  candidates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.6.0'
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::shiny
+            any::leaflet
+            any::sf
+            any::terra
+            any::DT
+            any::readxl
+          cache-version: 2
+          install-pandoc: false
+          install-quarto: false
+      - name: Diagnose candidate components
+        env:
+          CI: 'true'
+        run: Rscript tests/qa/napo_candidate_diagnostic.R
+      - name: Upload candidate diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: napo-candidates
+          path: qa_results/napo_candidates/
+          if-no-files-found: warn
+          retention-days: 7
