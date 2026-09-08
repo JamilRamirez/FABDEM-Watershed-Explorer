@@ -1,0 +1,49 @@
+name: Validate morfometria R syntax
+
+on:
+  push:
+    branches:
+      - chore/consolidate-morfometria-v37
+    paths:
+      - .github/workflows/validate_morfometria_r.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: chore/consolidate-morfometria-v37
+          fetch-depth: 0
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+
+      - name: Parse R files
+        shell: bash
+        run: |
+          Rscript -e "parse(file='R/morfometria.R'); parse(file='R/medio_fisico.R'); parse(file='app.R'); cat('Sintaxis R valida para morfometria, medio_fisico y app.R.\\n')"
+
+      - name: Verify canonical references
+        shell: bash
+        run: |
+          test ! -e R/morfometria_graficos_v37.R
+          ! grep -R -n --exclude-dir=.git 'morfometria_graficos_v37' R app.R
+          test "$(grep -c 'draw_hipsometrica_plot <- function(x)' R/morfometria.R)" -eq 1
+          test "$(grep -c 'draw_hist_elevacion_plot <- function(x)' R/morfometria.R)" -eq 1
+
+      - name: Remove temporary workflow
+        shell: bash
+        run: |
+          rm .github/workflows/validate_morfometria_r.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Retira validación temporal de morfometría'
+          git push origin HEAD:chore/consolidate-morfometria-v37
