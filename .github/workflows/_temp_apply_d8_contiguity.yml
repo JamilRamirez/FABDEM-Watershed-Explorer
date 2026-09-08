@@ -1,0 +1,32 @@
+name: TEMP Apply D8 contiguity fix
+
+on:
+  push:
+    branches:
+      - fix/d8-contiguous-polygon-final
+    paths:
+      - .github/workflows/_temp_apply_d8_contiguity.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/d8-contiguous-polygon-final
+          fetch-depth: 0
+
+      - name: Apply patch
+        run: python3 tests/ci/_apply_d8_contiguity_fix.py
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add R/helpers.R R/delimitacion.R tests/ci/smoke_app.R
+          git commit -m "Valida continuidad D8 y corrige uniones diagonales" || exit 0
+          git push origin HEAD:fix/d8-contiguous-polygon-final
