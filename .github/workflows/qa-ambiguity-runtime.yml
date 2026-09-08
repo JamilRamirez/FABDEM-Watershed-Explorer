@@ -44,4 +44,18 @@ jobs:
       - name: Run real Runtime ambiguity cases
         env:
           CI: 'true'
-        run: Rscript tools/ci/qa_ambiguity_runtime.R
+        shell: bash
+        run: |
+          set +e
+          Rscript tools/ci/qa_ambiguity_runtime.R 2>&1 | tee qa_ambiguity_runtime.log
+          rc=${PIPESTATUS[0]}
+          exit "$rc"
+
+      - name: Upload Runtime QA log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ambiguity-runtime-qa-log
+          path: qa_ambiguity_runtime.log
+          if-no-files-found: warn
+          retention-days: 7
