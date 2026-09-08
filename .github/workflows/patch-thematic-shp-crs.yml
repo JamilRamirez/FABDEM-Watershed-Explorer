@@ -1,0 +1,35 @@
+name: Patch thematic SHP CRS
+
+on:
+  push:
+    branches:
+      - feature/thematic-shp-crs
+    paths:
+      - scripts/patch_thematic_shp_crs.py
+      - .github/workflows/patch-thematic-shp-crs.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/thematic-shp-crs
+
+      - name: Apply thematic SHP CRS patch
+        run: python3 scripts/patch_thematic_shp_crs.py
+
+      - name: Commit patched files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add R THEMATIC_SHP_CRS_PATCH_REPORT.txt
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Permite exportar SHP temáticos en WGS84 o UTM"
+            git push origin HEAD:feature/thematic-shp-crs
+          fi
