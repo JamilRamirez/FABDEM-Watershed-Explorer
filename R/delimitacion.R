@@ -1916,7 +1916,18 @@ delimitacion <- local({
       }
 
       merge_distance <- primary_path$click_distance_m[merge$index_a]
-      if (!is.finite(merge_distance) || merge_distance > AMBIGUITY_WIDE_PATH_M) {
+
+      # En un rio ancho/multicanal, una segunda trayectoria solo
+      # representa una ambiguedad real del clic si la reunion D8
+      # ocurre todavia en el entorno local. Un canal que converge
+      # mucho mas abajo puede ser hidrologicamente relacionado,
+      # pero no compite con el outlet que el usuario senalo.
+      merge_limit_m <- min(
+        AMBIGUITY_WIDE_PATH_M,
+        max(700, 2 * primary_distance)
+      )
+
+      if (!is.finite(merge_distance) || merge_distance > merge_limit_m) {
         next
       }
 
