@@ -1,0 +1,81 @@
+name: FABDEM CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fabdem-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-and-runtime:
+    name: Repository and Runtime coherence
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate architecture, catalog and Runtime
+        run: python3 tests/ci/check_repo.py
+
+  r-syntax:
+    name: R syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup R 4.6.0
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.6.0'
+          use-public-rspm: true
+
+      - name: Parse every R file
+        run: Rscript tests/ci/check_syntax.R
+
+  shiny-smoke:
+    name: Shiny smoke load
+    needs:
+      - repository-and-runtime
+      - r-syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup R 4.6.0
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.6.0'
+          use-public-rspm: true
+
+      - name: Install app dependencies
+        uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::shiny
+            any::leaflet
+            any::sf
+            any::terra
+            any::DT
+            any::readxl
+          cache-version: 1
+          install-pandoc: false
+          install-quarto: false
+
+      - name: Build the complete Shiny app without running a server
+        env:
+          CI: 'true'
+        run: Rscript tests/ci/smoke_app.R
