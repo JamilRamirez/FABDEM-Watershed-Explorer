@@ -276,6 +276,34 @@ if (!isTRUE(gap_failed)) {
   )
 }
 
+
+# Fuerza la ruta usada para rasters muy grandes: se omite patches(),
+# pero la QA vectorial final debe seguir rechazando cualquier salto.
+gap_failed_vector <- FALSE
+tryCatch(
+  {
+    app_env$polygonize_basin(
+      r_gap_file,
+      gpkg_gap_file,
+      expected_cells = length(cells_d8) + 1L,
+      connectivity_scan_max_cells = 0
+    )
+  },
+  error = function(e) {
+    gap_failed_vector <<- grepl(
+      "FALLO VECTORIAL D8",
+      conditionMessage(e),
+      fixed = TRUE
+    )
+  }
+)
+
+if (!isTRUE(gap_failed_vector)) {
+  stop(
+    "Regresion D8: la ruta escalable permitio una geometria con salto real."
+  )
+}
+
 unlink(
   c(
     r_d8_file,

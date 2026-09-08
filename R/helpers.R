@@ -2931,7 +2931,8 @@ trace_upstream <- function(
 
 validate_basin_raster_d8 <- function(
     basin_tif,
-    expected_cells = NULL
+    expected_cells = NULL,
+    max_patch_cells = 5000000
 ) {
 
   if (!file_nonempty(
@@ -2996,62 +2997,98 @@ validate_basin_raster_d8 <- function(
   }
 
 
-  patch_file <- tempfile(
-    pattern = "basin_d8_patches_",
-    tmpdir = TERRA_TEMP,
-    fileext = ".tif"
-  )
-
-
-  on.exit(
-    unlink(
-      patch_file,
-      force = TRUE
-    ),
-    add = TRUE
-  )
-
-
-  patch_r <- terra::patches(
-    r,
-    directions = 8,
-    values = FALSE,
-    zeroAsNA = TRUE,
-    allowGaps = FALSE,
-    filename = patch_file,
-    overwrite = TRUE
-  )
-
-
-  n_patches <- suppressWarnings(
-    as.integer(
-      terra::global(
-        patch_r,
-        "max",
-        na.rm = TRUE
-      )[1, 1]
+  raster_cells <- as.double(
+    terra::ncell(
+      r
     )
   )
 
 
-  if (
-    !is.finite(n_patches) ||
-    n_patches != 1L
-  ) {
-    stop(
-      paste0(
-        "FALLO DE CONTINUIDAD D8: la cuenca contiene ",
-        if (is.finite(n_patches)) n_patches else "varios",
-        " componentes separados. Se detecto un salto real entre celdas y ",
-        "la geometria no sera generada."
+  max_patch_cells <- suppressWarnings(
+    as.double(
+      max_patch_cells
+    )
+  )
+
+
+  run_patch_check <- (
+    is.finite(max_patch_cells) &&
+    max_patch_cells >= 1 &&
+    is.finite(raster_cells) &&
+    raster_cells <= max_patch_cells
+  )
+
+
+  n_patches <- NA_integer_
+
+
+  if (isTRUE(
+    run_patch_check
+  )) {
+
+    patch_file <- tempfile(
+      pattern = "basin_d8_patches_",
+      tmpdir = TERRA_TEMP,
+      fileext = ".tif"
+    )
+
+
+    on.exit(
+      unlink(
+        patch_file,
+        force = TRUE
+      ),
+      add = TRUE
+    )
+
+
+    patch_r <- terra::patches(
+      r,
+      directions = 8,
+      values = FALSE,
+      zeroAsNA = TRUE,
+      allowGaps = FALSE,
+      filename = patch_file,
+      overwrite = TRUE
+    )
+
+
+    n_patches <- suppressWarnings(
+      as.integer(
+        terra::global(
+          patch_r,
+          "max",
+          na.rm = TRUE
+        )[1, 1]
       )
     )
+
+
+    if (
+      !is.finite(n_patches) ||
+      n_patches != 1L
+    ) {
+      stop(
+        paste0(
+          "FALLO DE CONTINUIDAD D8: la cuenca contiene ",
+          if (is.finite(n_patches)) n_patches else "varios",
+          " componentes separados. Se detecto un salto real entre celdas y ",
+          "la geometria no sera generada."
+        )
+      )
+    }
   }
 
 
   list(
     n_cells = actual_cells,
-    n_patches_8 = n_patches
+    raster_cells = raster_cells,
+    n_patches_8 = n_patches,
+    patch_check = if (isTRUE(run_patch_check)) {
+      "FULL_8_CONNECTED"
+    } else {
+      "SKIPPED_LARGE_RASTER_FINAL_VECTOR_QA_REQUIRED"
+    }
   )
 }
 
@@ -3263,8 +3300,37 @@ close_d8_diagonal_polygon <- function(
   )
 
 
-  sf::st_make_valid(
+  closed_source <- sf::st_make_valid(
     closed_source
+  )
+
+
+  final_union <- suppressWarnings(
+    sf::st_union(
+      sf::st_geometry(
+        closed_source
+      )
+    )
+  )
+
+
+  final_parts <- suppressWarnings(
+    sf::st_cast(
+      final_union,
+      "POLYGON"
+    )
+  )
+
+
+  if (length(final_parts) != 1L) {
+    stop(
+      "FALLO VECTORIAL D8: la reproyeccion final volvio a separar la cuenca."
+    )
+  }
+
+
+  sf::st_sf(
+    geometry = final_union
   )
 }
 
@@ -3724,12 +3790,14 @@ write_basin_raster <- function(
 polygonize_basin <- function(
     basin_tif,
     basin_gpkg,
-    expected_cells = NULL
+    expected_cells = NULL,
+    connectivity_scan_max_cells = 5000000
 ) {
 
   qa <- validate_basin_raster_d8(
     basin_tif = basin_tif,
-    expected_cells = expected_cells
+    expected_cells = expected_cells,
+    max_patch_cells = connectivity_scan_max_cells
   )
 
 
