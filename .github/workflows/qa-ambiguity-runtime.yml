@@ -1,9 +1,6 @@
 name: Ambiguity Runtime QA
 
 on:
-  push:
-    branches:
-      - feature/ambiguous-outlet-choice
   workflow_dispatch:
 
 permissions:
