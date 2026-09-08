@@ -1,1 +1,1 @@
-trigger normal CI after topology refinement
+trigger Runtime QA after defensive distance fix
