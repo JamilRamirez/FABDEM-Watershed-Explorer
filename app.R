@@ -238,6 +238,29 @@ ui <- tagList(
     ),
     tags$script(
       src = "morfometria_layout.js"
+    ),
+    tags$script(
+      HTML(
+        "
+        document.addEventListener('DOMContentLoaded', function () {
+          const ensureOsmAttribution = function () {
+            document.querySelectorAll('.leaflet-control-attribution').forEach(function (el) {
+              if (!/OpenStreetMap/i.test(el.textContent || '')) {
+                const separator = el.textContent.trim() ? ' | ' : '';
+                el.insertAdjacentHTML(
+                  'beforeend',
+                  separator + '<a href=\"https://www.openstreetmap.org/copyright\" target=\"_blank\" rel=\"noopener noreferrer\">© OpenStreetMap contributors</a>'
+                );
+              }
+            });
+          };
+
+          ensureOsmAttribution();
+          const observer = new MutationObserver(ensureOsmAttribution);
+          observer.observe(document.body, { childList: true, subtree: true });
+        });
+        "
+      )
     )
   ),
 
@@ -423,6 +446,27 @@ ui <- tagList(
             class = "fabdem-about-note",
             tags$strong("Uso recomendado. "),
             "Herramienta de apoyo para análisis y caracterización; los resultados deben contrastarse con fuentes oficiales y verificación de campo cuando corresponda."
+          ),
+          tags$div(
+            class = "fabdem-about-note",
+            tags$strong("FABDEM v1.2 y licencia. "),
+            tags$span(
+              "El modelo digital de elevación FABDEM v1.2 es publicado por la University of Bristol y está sujeto a la "
+            ),
+            tags$a(
+              href = "https://data.bris.ac.uk/data/dataset/s5hqmjcdj8yo2ibzi9b4ew3sn",
+              target = "_blank",
+              rel = "noopener noreferrer",
+              "Non-Commercial Government Licence for public sector information"
+            ),
+            tags$span(
+              ". Los recortes, derivados y productos generados por esta aplicación no sustituyen ni modifican las condiciones de uso del dataset fuente."
+            )
+          ),
+          tags$div(
+            class = "fabdem-about-note",
+            tags$strong("Privacidad de archivos cargados. "),
+            "Las cuencas o archivos espaciales cargados por el usuario se utilizan para ejecutar el análisis de la sesión. La aplicación no requiere registro ni solicita datos personales. Evite cargar información confidencial o datos personales innecesarios."
           ),
           layer_source_ui(
             title = "Fuentes de datos de la aplicación",
