@@ -1,0 +1,110 @@
+name: Fix morfometria DT Ajax
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/fix-morfometria-dt-ajax.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Force client-side DT tables in morfometria
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('R/morfometria.R')
+          text = path.read_text(encoding='utf-8')
+          needle = 'DT::renderDT('
+          out = []
+          pos = 0
+          count = 0
+
+          while True:
+              start = text.find(needle, pos)
+              if start < 0:
+                  out.append(text[pos:])
+                  break
+
+              out.append(text[pos:start])
+              call_start = start
+              paren = start + len('DT::renderDT')
+              depth = 0
+              i = paren
+              quote = None
+              escape = False
+              in_comment = False
+
+              while i < len(text):
+                  ch = text[i]
+
+                  if in_comment:
+                      if ch == '\n':
+                          in_comment = False
+                      i += 1
+                      continue
+
+                  if quote is not None:
+                      if escape:
+                          escape = False
+                      elif ch == '\\':
+                          escape = True
+                      elif ch == quote:
+                          quote = None
+                      i += 1
+                      continue
+
+                  if ch in ('\"', "'"):
+                      quote = ch
+                      i += 1
+                      continue
+
+                  if ch == '#':
+                      in_comment = True
+                      i += 1
+                      continue
+
+                  if ch == '(':
+                      depth += 1
+                  elif ch == ')':
+                      depth -= 1
+                      if depth == 0:
+                          break
+                  i += 1
+
+              if i >= len(text):
+                  raise RuntimeError('No se pudo cerrar una llamada DT::renderDT')
+
+              call = text[call_start:i]
+              if 'server = FALSE' in call:
+                  out.append(text[call_start:i+1])
+              else:
+                  out.append(text[call_start:i] + ', server = FALSE)')
+                  count += 1
+
+              pos = i + 1
+
+          new_text = ''.join(out)
+          if count != 7:
+              raise RuntimeError(f'Se esperaban 7 renderDT sin server=FALSE y se encontraron {count}')
+
+          path.write_text(new_text, encoding='utf-8')
+          print(f'Actualizadas {count} tablas DT a modo cliente.')
+          PY
+
+          git rm .github/workflows/fix-morfometria-dt-ajax.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add R/morfometria.R
+          git commit -m 'Evita Ajax inestable en tablas secuenciales de morfometria'
+          git push
