@@ -8690,7 +8690,7 @@ morfometria <- local({
             ),
             "parametros_principales"
           )
-        })
+        }, server = FALSE)
 
 
         output$tabla_avanzada <- DT::renderDT({
@@ -8727,7 +8727,7 @@ morfometria <- local({
             ),
             "geometria_relieve_avanzados"
           )
-        })
+        }, server = FALSE)
 
 
         output$tabla_recorrido_cauce <- DT::renderDT({
@@ -8764,7 +8764,7 @@ morfometria <- local({
             ),
             "recorrido_hidraulico_cauce_principal"
           )
-        })
+        }, server = FALSE)
 
 
         output$tabla_red <- DT::renderDT({
@@ -8801,7 +8801,7 @@ morfometria <- local({
             ),
             "red_drenaje_strahler"
           )
-        })
+        }, server = FALSE)
 
 
         output$tabla_red_derivada <- DT::renderDT({
@@ -8838,7 +8838,7 @@ morfometria <- local({
             ),
             "indices_derivados_red"
           )
-        })
+        }, server = FALSE)
 
 
         output$tabla_tc <- DT::renderDT({
@@ -8875,7 +8875,7 @@ morfometria <- local({
             ),
             "tiempos_concentracion"
           )
-        })
+        }, server = FALSE)
 
 
         output$tabla_strahler <- DT::renderDT({
@@ -8946,7 +8946,7 @@ morfometria <- local({
             out,
             "resumen_orden_strahler"
           )
-        })
+        }, server = FALSE)
 
         draw_mapa_fisiografico <- function(x = NULL) {
 
