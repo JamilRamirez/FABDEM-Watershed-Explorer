@@ -15,7 +15,8 @@ clima_superficie <- local({
       shiny::tags$style(
         shiny::HTML(
           paste0(
-            ".cs-wrap{padding:10px 12px 24px 12px;max-width:1550px;margin:auto;}"
+            ".cs-wrap{padding:10px 12px 24px 12px;max-width:1550px;margin:auto;}",
+            ".cs-vida-disclaimer{background:#fff8e1;border-left:4px solid #f0ad4e;padding:10px 12px;margin:12px 18px 0 18px;}"
           )
         )
       ),
@@ -54,6 +55,15 @@ clima_superficie <- local({
           shiny::tabPanel(
             title = "Zonas de vida",
             value = "vida",
+            shiny::div(
+              class = "cs-vida-disclaimer",
+              shiny::tags$strong("Aviso sobre los códigos. "),
+              paste0(
+                "Los identificadores mostrados en la aplicación se utilizan únicamente como referencia auxiliar para organizar y vincular las unidades de la capa. ",
+                "No corresponden a códigos oficiales representados en la carta original de zonas de vida, cuya información temática se presenta mediante la descripción de cada unidad. ",
+                "Para la interpretación y el uso de esta capa debe considerarse la descripción de la zona de vida, no el identificador mostrado."
+              )
+            ),
             vida$ui(
               ns("vida")
             )
