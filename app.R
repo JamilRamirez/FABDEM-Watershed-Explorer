@@ -239,6 +239,84 @@ ui <- tagList(
     tags$script(
       src = "morfometria_layout.js"
     ),
+    tags$style(
+      HTML(
+        ".shiny-notification{pointer-events:aut!important;}\n"
+        ".shiny-notification-close{pointer-events:auto!important;cursor:pointer!important;z-index:2;}\n"
+      )
+    ),
+    tags$script(
+      id = "fabdem-notification-autodismiss",
+      HTML(
+        "
+        document.addEventListener('DOMContentLoaded', function () {
+          const TTL = 10000;
+          const timers = new WeakMap();
+
+          const isActiveProgress = function (el) {
+            const hasProgress = el.classList.contains('shiny-notification-progress') ||
+              !!el.querySelector('.progress, .progress-bar');
+            if (!hasProgress) return false;
+            const txt = (el.textContent || '').replace(/\\s+/g, ' ');
+            return !(/100%|Listo/i.test(txt));
+          };
+
+          const fadeAndRemove = function (el) {
+            if (!document.body.contains(el)) return;
+            el.style.transition = 'opacity 300ms ease, transform 300ms ease';
+            el.style.opacity = '0';
+            el.style.transform = 'translateX(12px)';
+            window.setTimeout(function () {
+              if (document.body.contains(el)) el.remove();
+            }, 320);
+          };
+
+          const arm = function (el) {
+            if (!(el instanceof HTMLElement) || !el.classList.contains('shiny-notification')) return;
+
+            const oldTimer = timers.get(el);
+            if (oldTimer) window.clearTimeout(oldTimer);
+
+            if (isActiveProgress(el)) return;
+
+            const timer = window.setTimeout(function () {
+              fadeAndRemove(el);
+            }, TTL);
+            timers.set(el, timer);
+          };
+
+          const scan = function (node) {
+            if (!(node instanceof HTMLElement)) return;
+            if (node.classList.contains('shiny-notification')) arm(node);
+            node.querySelectorAll('.shiny-notification').forEach(arm);
+          };
+
+          document.querySelectorAll('.shiny-notification').forEach(arm);
+
+          const observer = new MutationObserver(function (mutations) {
+            mutations.forEach(function (mutation) {
+              if (mutation.type === 'childList') {
+                mutation.addedNodes.forEach(scan);
+                const parent = mutation.target instanceof HTMLElement
+                  ? mutation.target.closest('.shiny-notification')
+                  : null;
+                if (parent) arm(parent);
+              } else if (mutation.target instanceof HTMLElement) {
+                const parent = mutation.target.closest('.shiny-notification');
+                if (parent) arm(parent);
+              }
+            });
+          });
+
+          observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            characterData: true
+          });
+        });
+        "
+      )
+    ),
     tags$script(
       HTML(
         "
