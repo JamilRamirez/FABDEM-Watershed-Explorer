@@ -1381,6 +1381,9 @@ delimitacion <- local({
   AMBIGUITY_JUNCTION_MAX_M <- 450
   AMBIGUITY_JUNCTION_MARGIN_M <- 120
   AMBIGUITY_WIDE_TRIGGER_M <- 300
+  # Un snap muy lejano nunca debe resolverse silenciosamente como una sola cuenca.
+  # Si no se logra justificar como caso multicanal/confluencia, se pide otro clic.
+  AMBIGUITY_MAX_SINGLE_SNAP_M <- 600
   AMBIGUITY_WIDE_SCAN_M <- 2200
   AMBIGUITY_WIDE_PATH_M <- 6000
   AMBIGUITY_WIDE_MIN_PARALLEL <- 0.20
@@ -2179,6 +2182,22 @@ delimitacion <- local({
 
     if (!is.null(confluence)) {
       return(confluence)
+    }
+
+    # Salvaguarda final: un ajuste muy lejano que no pudo explicarse
+    # como confluencia o rio ancho/multicanal no es suficientemente
+    # confiable para delimitar automaticamente. Esto evita saltos
+    # aguas abajo como el observado en rios amazonicos anchos.
+    if (primary_distance > AMBIGUITY_MAX_SINGLE_SNAP_M) {
+      stop(
+        paste0(
+          'El punto de salida requeriria desplazar el outlet ',
+          round(primary_distance),
+          ' m y no se identificaron alternativas hidrologicas confiables. ',
+          'Para evitar delimitar una cuenca incorrecta, haz clic mas cerca ',
+          'del eje del cauce deseado.'
+        )
+      )
     }
 
     list(
