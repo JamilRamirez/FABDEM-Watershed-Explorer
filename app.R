@@ -241,7 +241,7 @@ ui <- tagList(
     ),
     tags$style(
       HTML(
-        ".shiny-notification{pointer-events:aut!important;}\n"
+        ".shiny-notification{pointer-events:auto!important;}\n"
         ".shiny-notification-close{pointer-events:auto!important;cursor:pointer!important;z-index:2;}\n"
       )
     ),
