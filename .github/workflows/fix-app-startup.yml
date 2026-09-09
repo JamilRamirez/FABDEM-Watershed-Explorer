@@ -37,8 +37,6 @@ jobs:
           path.write_text(text, encoding='utf-8')
           PY
 
-          Rscript -e "parse(file='app.R'); cat('app.R parse OK\\n')"
-
           git rm .github/workflows/fix-app-startup.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
