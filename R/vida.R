@@ -1748,7 +1748,7 @@ vida <- local({
           paste0(
             ".vid-wrap{padding:14px 18px 28px 18px;max-width:1500px;margin:auto;}",
             ".vid-head{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px;}",
-            ".vid-note{background:#f6f7f8;border-left:4px solid #607D8B;padding:10px 12px;margin:10px 0 14px 0;}",
+            ".vid-note{background:#fff8e1;border-left:4px solid #f0ad4e;padding:10px 12px;margin:10px 0 14px 0;}",
             ".vid-card{border:1px solid #ddd;border-radius:7px;padding:12px 12px 18px 12px;background:white;margin-bottom:16px;}",
             ".vid-card h4{margin-top:0;}",
             ".vid-a3-frame{width:1188px;max-width:100%;margin:0 auto;aspect-ratio:420/297;}",
@@ -1815,7 +1815,12 @@ vida <- local({
 
         shiny::div(
           class = "vid-note",
-          "La capa de zonas de vida se carga únicamente para las geometrías que intersectan la cuenca activa. La leyenda muestra las clases presentes y la tabla inferior enlaza cada código con la metadata normalizada."
+          shiny::tags$strong("Aviso sobre los identificadores. "),
+          paste0(
+            "Los códigos mostrados en esta sección son identificadores auxiliares utilizados únicamente para ordenar y vincular internamente las unidades de la capa. ",
+            "No corresponden a códigos oficiales de la carta original de Zonas de Vida, en la cual las unidades se presentan mediante su descripción. ",
+            "Para interpretar o utilizar estos resultados debe emplearse la descripción de cada zona de vida, no el identificador mostrado."
+          )
         ),
 
         layer_source_ui(VIDA_STEM),
