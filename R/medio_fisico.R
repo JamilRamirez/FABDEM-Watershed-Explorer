@@ -119,3 +119,8 @@ medio_fisico <- local({
     server = server
   )
 })
+
+# Delimitacion y helpers ya fueron cargados por app.R en este punto.
+# Se instala aquí para no alterar la arquitectura del módulo de carga.
+sys.source("R/security_hardening.R", envir = environment())
+install_security_hardening(environment())
