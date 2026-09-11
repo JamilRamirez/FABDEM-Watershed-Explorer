@@ -2,7 +2,7 @@
 # R/delimitacion.R
 #
 # MODULO 01: DELIMITACION
-# v5: admite cuenca delimitada o importada y permite exportar GPKG/SHP en WGS84 o UTM; KML/KMZ en WGS84
+# v6: GPKG/SHP conservan geometria original; KML/KMZ generan copia compatible con Google Earth en WGS84
 # ============================================================
 #
 # Interfaz deliberadamente minima:
@@ -1129,6 +1129,11 @@ delimitacion <- local({
       )
 
 
+      x_google_earth <- fabdem_google_earth_geometry(
+        x_wgs84
+      )
+
+
       artifact <- file.path(
         work_dir,
         paste0(
@@ -1139,7 +1144,7 @@ delimitacion <- local({
 
 
       sf::st_write(
-        x_wgs84,
+        x_google_earth,
         artifact,
         layer = "cuenca",
         driver = kml_driver,
@@ -1166,6 +1171,11 @@ delimitacion <- local({
       )
 
 
+      x_google_earth <- fabdem_google_earth_geometry(
+        x_wgs84
+      )
+
+
       kmz_dir <- file.path(
         work_dir,
         "kmz"
@@ -1186,7 +1196,7 @@ delimitacion <- local({
 
 
       sf::st_write(
-        x_wgs84,
+        x_google_earth,
         kml_file,
         layer = "cuenca",
         driver = kml_driver,
@@ -2920,7 +2930,7 @@ delimitacion <- local({
               class = "coord-note",
               paste0(
                 "GeoPackage y Shapefile pueden descargarse en UTM automática o WGS84. ",
-                "KML y KMZ se exportan siempre en WGS84."
+                "KML y KMZ se exportan en WGS84 y, si la cuenca es muy compleja, se simplifican solo para visualizacion en Google Earth. GPKG y Shapefile conservan el borde original."
               )
             ),
 
