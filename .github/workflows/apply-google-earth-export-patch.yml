@@ -21,15 +21,15 @@ jobs:
           ref: feature/google-earth-kml-simplification
           fetch-depth: 0
 
-      - name: Apply guarded patch
-        run: python3 scripts/apply_google_earth_export_patch.py
+      - name: Apply R-only patch
+        run: python3 scripts/apply_google_earth_r_only.py
 
-      - name: Commit final tree
+      - name: Commit functional change
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
+          git add R/helpers.R R/delimitacion.R
           git diff --cached --stat
           git commit -m "Compatibiliza KML y KMZ complejos con Google Earth"
           git push origin HEAD:feature/google-earth-kml-simplification
