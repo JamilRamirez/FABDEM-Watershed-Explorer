@@ -16,7 +16,7 @@ permissions:
 jobs:
   google-earth-export:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -28,12 +28,17 @@ jobs:
           r-version: '4.6.0'
           use-public-rspm: true
 
-      - name: Install sf
+      - name: Install app dependencies using CI cache
         uses: r-lib/actions/setup-r-dependencies@v2
         with:
           packages: |
+            any::shiny
+            any::leaflet
             any::sf
-          cache-version: google-earth-export-1
+            any::terra
+            any::DT
+            any::readxl
+          cache-version: 1
           install-pandoc: false
           install-quarto: false
 
