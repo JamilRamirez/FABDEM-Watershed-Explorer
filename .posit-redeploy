@@ -1,2 +1,3 @@
-Redeploy trigger 2026-09-09T13:05-05:00
-Stable tree based on 332f11a7 with notification rollback.
+Redeploy trigger 2026-09-29T18:30-05:00
+Runtime migrated from Git LFS to GitHub Releases.
+Forces a clean Connect Cloud process after runtime_release_manifest.csv publication.
