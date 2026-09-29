@@ -535,7 +535,9 @@ runtime_cache_file <- function(path) {
   }
 
   urls <- if (nzchar(release_url)) {
-    c(release_url, primary_url)
+    # Si el asset ya fue migrado, Release es la unica fuente.
+    # No se vuelve a consumir Git LFS como fallback.
+    release_url
   } else {
     primary_url
   }
