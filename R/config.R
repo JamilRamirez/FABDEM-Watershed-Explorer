@@ -543,6 +543,7 @@ runtime_cache_file <- function(path) {
   }
 
   if (
+    !nzchar(release_url) &&
     length(raw_base) == 1L &&
     !is.na(raw_base) &&
     nzchar(raw_base)
