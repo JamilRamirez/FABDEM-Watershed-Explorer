@@ -52,6 +52,158 @@ RUNTIME_BASE_URL <- paste0(
 )
 
 
+# ------------------------------------------------------------
+# CATALOGO DE ASSETS SIN GIT LFS
+# ------------------------------------------------------------
+#
+# Los binarios publicados como assets de GitHub Releases tienen
+# prioridad sobre el Runtime historico alojado en Git LFS.
+# El manifiesto es texto liviano y vive en el repositorio Runtime.
+# Mientras la migracion no haya sido ejecutada, la aplicacion
+# conserva el origen LFS como fallback para no romper produccion.
+# ------------------------------------------------------------
+
+RUNTIME_RELEASE_MANIFEST_URL <- paste0(
+  "https://raw.githubusercontent.com/",
+  "JamilRamirez/FABDEM-Watershed-Runtime/main/",
+  "runtime_release_manifest.csv"
+)
+
+RUNTIME_RELEASE_CACHE <- new.env(
+  parent = emptyenv()
+)
+
+RUNTIME_RELEASE_CACHE$loaded <- FALSE
+RUNTIME_RELEASE_CACHE$data <- NULL
+
+
+runtime_release_catalog <- function() {
+
+  if (isTRUE(RUNTIME_RELEASE_CACHE$loaded)) {
+    return(RUNTIME_RELEASE_CACHE$data)
+  }
+
+  RUNTIME_RELEASE_CACHE$loaded <- TRUE
+
+  tmp <- tempfile(
+    pattern = "runtime_release_manifest_",
+    fileext = ".csv"
+  )
+
+  on.exit(
+    unlink(tmp, force = TRUE),
+    add = TRUE
+  )
+
+  status <- tryCatch(
+    utils::download.file(
+      RUNTIME_RELEASE_MANIFEST_URL,
+      tmp,
+      mode = "wb",
+      quiet = TRUE
+    ),
+    error = function(e) NA_integer_
+  )
+
+  if (
+    !identical(status, 0L) ||
+    !file.exists(tmp) ||
+    !is.finite(file.info(tmp)$size) ||
+    file.info(tmp)$size <= 0
+  ) {
+    RUNTIME_RELEASE_CACHE$data <- NULL
+    return(NULL)
+  }
+
+  out <- tryCatch(
+    utils::read.csv(
+      tmp,
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    ),
+    error = function(e) NULL
+  )
+
+  required <- c(
+    "RELATIVE_PATH",
+    "REMOTE_URL",
+    "SIZE_BYTES"
+  )
+
+  if (
+    is.null(out) ||
+    nrow(out) < 1L ||
+    !all(required %in% names(out))
+  ) {
+    RUNTIME_RELEASE_CACHE$data <- NULL
+    return(NULL)
+  }
+
+  out$RELATIVE_PATH <- gsub(
+    "\\\\",
+    "/",
+    as.character(out$RELATIVE_PATH)
+  )
+
+  out$REMOTE_URL <- trimws(
+    as.character(out$REMOTE_URL)
+  )
+
+  out$SIZE_BYTES <- suppressWarnings(
+    as.numeric(out$SIZE_BYTES)
+  )
+
+  out <- out[
+    nzchar(out$RELATIVE_PATH) &
+      nzchar(out$REMOTE_URL),
+    ,
+    drop = FALSE
+  ]
+
+  if (nrow(out) < 1L) {
+    RUNTIME_RELEASE_CACHE$data <- NULL
+    return(NULL)
+  }
+
+  RUNTIME_RELEASE_CACHE$data <- out
+  out
+}
+
+
+runtime_release_entry <- function(relative_path) {
+
+  catalog <- runtime_release_catalog()
+
+  if (
+    is.null(catalog) ||
+    nrow(catalog) < 1L
+  ) {
+    return(NULL)
+  }
+
+  rel <- gsub(
+    "\\\\",
+    "/",
+    as.character(relative_path)
+  )
+
+  hit <- match(
+    rel,
+    catalog$RELATIVE_PATH
+  )
+
+  if (is.na(hit)) {
+    return(NULL)
+  }
+
+  catalog[
+    hit,
+    ,
+    drop = FALSE
+  ]
+}
+
+
 RUNTIME_ROOT <- file.path(
   tempdir(),
   "FABDEM_Watershed_Runtime"
@@ -302,10 +454,53 @@ runtime_cache_file <- function(path) {
     stop(paste0("Ruta fuera del cache Runtime:\n", path))
   }
 
+  relative_path <- substring(
+    candidate,
+    nchar(root) + 2L
+  )
+
+  relative_path <- gsub(
+    "\\\\",
+    "/",
+    relative_path
+  )
+
+  release_entry <- runtime_release_entry(
+    relative_path
+  )
+
+  expected_size <- if (
+    !is.null(release_entry) &&
+    nrow(release_entry) == 1L
+  ) {
+    suppressWarnings(
+      as.numeric(release_entry$SIZE_BYTES[1])
+    )
+  } else {
+    NA_real_
+  }
+
+  cached_size <- if (file.exists(candidate)) {
+    suppressWarnings(
+      as.numeric(file.info(candidate)$size)
+    )
+  } else {
+    NA_real_
+  }
+
+  cached_size_ok <- (
+    is.finite(cached_size) &&
+    cached_size > 0 &&
+    (
+      !is.finite(expected_size) ||
+      expected_size <= 0 ||
+      identical(cached_size, expected_size)
+    )
+  )
+
   if (
     file.exists(candidate) &&
-    is.finite(file.info(candidate)$size) &&
-    file.info(candidate)$size > 0 &&
+    cached_size_ok &&
     !runtime_is_lfs_pointer(candidate)
   ) {
     return(candidate)
@@ -317,7 +512,6 @@ runtime_cache_file <- function(path) {
     unlink(candidate, force = TRUE)
   }
 
-  relative_path <- substring(candidate, nchar(root) + 2L)
   encoded_path <- utils::URLencode(relative_path)
 
   primary_url <- paste0(
@@ -327,7 +521,24 @@ runtime_cache_file <- function(path) {
 
   raw_base <- runtime_raw_base_url()
 
-  urls <- primary_url
+  release_url <- if (
+    !is.null(release_entry) &&
+    nrow(release_entry) == 1L
+  ) {
+    trimws(
+      as.character(
+        release_entry$REMOTE_URL[1]
+      )
+    )
+  } else {
+    ""
+  }
+
+  urls <- if (nzchar(release_url)) {
+    c(release_url, primary_url)
+  } else {
+    primary_url
+  }
 
   if (
     length(raw_base) == 1L &&
@@ -378,11 +589,24 @@ runtime_cache_file <- function(path) {
       }
     )
 
+    partial_size <- if (file.exists(partial)) {
+      suppressWarnings(
+        as.numeric(file.info(partial)$size)
+      )
+    } else {
+      NA_real_
+    }
+
     valid_download <- (
       identical(status, 0L) &&
       file.exists(partial) &&
-      is.finite(file.info(partial)$size) &&
-      file.info(partial)$size > 0
+      is.finite(partial_size) &&
+      partial_size > 0 &&
+      (
+        !is.finite(expected_size) ||
+        expected_size <= 0 ||
+        identical(partial_size, expected_size)
+      )
     )
 
     if (!isTRUE(valid_download)) {
