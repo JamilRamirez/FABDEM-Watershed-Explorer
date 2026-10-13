@@ -1765,10 +1765,9 @@ vida <- local({
         shiny::div(
           class = "vid-head",
 
-          shiny::actionButton(
-            ns("analizar"),
-            "Cargar zonas de vida",
-            class = "btn-success"
+          shiny::uiOutput(
+            ns("analizar_ui"),
+            inline = TRUE
           ),
 
           shiny::downloadButton(
@@ -1828,7 +1827,7 @@ vida <- local({
         shiny::conditionalPanel(
           condition = paste0(
             "output['",
-            ns("has_results"),
+            ns("has_basin"),
             "'] === 'true'"
           ),
 
@@ -1878,7 +1877,13 @@ vida <- local({
           output,
           session
       ) {
-        result <- shiny::reactiveVal(NULL)
+        result <- shiny::reactiveVal(
+          NULL
+        )
+
+        preview_ready <- shiny::reactiveVal(
+          FALSE
+        )
 
         status <- shiny::reactiveVal(
           "Delimita o carga una cuenca para consultar Zonas de vida."
@@ -1909,9 +1914,15 @@ vida <- local({
         shiny::observeEvent(
           current_key(),
           {
-            result(NULL)
+            result(
+              NULL
+            )
+
+            preview_ready(
+              FALSE
+            )
             status(
-              "Cuenca disponible. Pulsa Cargar zonas de vida."
+              "Preparando vista previa de la cuenca..."
             )
           },
           ignoreInit = TRUE
@@ -1920,6 +1931,23 @@ vida <- local({
         shiny::observeEvent(
           input$analizar,
           {
+
+            progress <- shiny::Progress$new(
+              session = session,
+              min = 0,
+              max = 1
+            )
+
+            on.exit(
+              progress$close(),
+              add = TRUE
+            )
+
+            progress$set(
+              message = "Cargar zonas de vida",
+              detail = "Iniciando procesamiento temático...",
+              value = 0.05
+            )
             tryCatch(
               {
                 b <- basin()
@@ -1934,6 +1962,12 @@ vida <- local({
                   "Localizando capa de zonas de vida..."
                 )
 
+                progress$set(
+                  message = "Cargar zonas de vida",
+                  detail = "Localizando capa de zonas de vida...",
+                  value = 0.18
+                )
+
                 spatial <- read_vida_for_basin(
                   b
                 )
@@ -1942,9 +1976,21 @@ vida <- local({
                   "Calculando áreas y enlazando metadata..."
                 )
 
+                progress$set(
+                  message = "Cargar zonas de vida",
+                  detail = "Calculando áreas y enlazando metadata...",
+                  value = 0.72
+                )
+
                 tab_info <- build_vida_table(
                   vida = spatial$vida,
                   basin = b
+                )
+
+                progress$set(
+                  message = "Cargar zonas de vida",
+                  detail = "Preparando resultados...",
+                  value = 0.92
                 )
 
                 result(
@@ -1959,6 +2005,12 @@ vida <- local({
                     source_mode = spatial$source_mode,
                     selected_tiles = spatial$selected_tiles
                   )
+                )
+
+                progress$set(
+                  message = "Cargar zonas de vida",
+                  detail = "Listo.",
+                  value = 1
                 )
 
                 status(
@@ -1992,9 +2044,47 @@ vida <- local({
           }
         )
 
+        output$analizar_ui <- shiny::renderUI({
+          if (is.null(basin())) {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Cargar zonas de vida",
+              class = "btn-success",
+              disabled = "disabled"
+            )
+          } else if (!isTRUE(preview_ready())) {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Preparando cuenca...",
+              class = "btn-success",
+              disabled = "disabled"
+            )
+          } else {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Cargar zonas de vida",
+              class = "btn-success"
+            )
+          }
+        })
+
         output$estado <- shiny::renderText({
           status()
         })
+
+        output$has_basin <- shiny::renderText({
+          if (is.null(basin())) {
+            "false"
+          } else {
+            "true"
+          }
+        })
+
+        shiny::outputOptions(
+          output,
+          "has_basin",
+          suspendWhenHidden = FALSE
+        )
 
         output$has_results <- shiny::renderText({
           if (is.null(result())) {
@@ -2012,8 +2102,34 @@ vida <- local({
 
         output$mapa <- shiny::renderPlot({
           x <- result()
-          shiny::req(x)
-          draw_vida_map(x)
+
+          if (!is.null(x)) {
+            draw_vida_map(
+              x
+            )
+          } else {
+            b <- basin()
+
+            shiny::req(
+              b
+            )
+
+            fabdem_draw_basin_preview(
+              b,
+              title = "Cuenca activa",
+              subtitle = "Cuenca visible. Pulsa Cargar zonas de vida para iniciar Zonas de vida."
+            )
+
+            if (!isTRUE(preview_ready())) {
+              preview_ready(
+                TRUE
+              )
+
+              status(
+                "Cuenca visible. Pulsa Cargar zonas de vida para iniciar el procesamiento temático."
+              )
+            }
+          }
         })
 
         output$tabla <- DT::renderDT({
@@ -2023,6 +2139,12 @@ vida <- local({
             x$table
           )
         }, server = FALSE)
+
+        shiny::outputOptions(
+          output,
+          "tabla",
+          suspendWhenHidden = FALSE
+        )
 
         output$descargar_png <- shiny::downloadHandler(
           filename = function() {
