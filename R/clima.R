@@ -1238,17 +1238,11 @@ clima <- local({
 
   draw_clima_preview_map <- function(basin) {
 
-    basin <- sf::st_make_valid(
-      basin
-    )
-
-    basin <- basin[
-      !sf::st_is_empty(basin),
-      ,
-      drop = FALSE
-    ]
-
-    if (nrow(basin) < 1L) {
+    if (
+      is.null(basin) ||
+      !inherits(basin, "sf") ||
+      nrow(basin) < 1L
+    ) {
       return(
         invisible(NULL)
       )
@@ -2065,6 +2059,8 @@ clima <- local({
       ) {
         result <- shiny::reactiveVal(NULL)
 
+        processing <- shiny::reactiveVal(FALSE)
+
         status <- shiny::reactiveVal(
           "Delimita o carga una cuenca para consultar Clima."
         )
@@ -2106,115 +2102,164 @@ clima <- local({
           input$analizar,
           {
 
-            progress <- shiny::Progress$new(
-              session = session,
-              min = 0,
-              max = 1
-            )
-
-            on.exit(
-              progress$close(),
-              add = TRUE
-            )
-
-            progress_fun <- function(
-                value,
-                detail
-            ) {
-              progress$set(
-                message = "Cargando clima",
-                detail = detail,
-                value = value
+            if (isTRUE(processing())) {
+              shiny::showNotification(
+                "El análisis climático ya está en curso.",
+                type = "message",
+                duration = 3
               )
+              return(invisible(NULL))
             }
 
-            tryCatch(
-              {
-                b <- basin()
+            b <- basin()
 
-                if (is.null(b)) {
-                  stop(
-                    "Primero delimita o carga una cuenca."
-                  )
-                }
+            if (is.null(b)) {
+              shiny::showNotification(
+                "Primero delimita o carga una cuenca.",
+                type = "error",
+                duration = 5
+              )
+              return(invisible(NULL))
+            }
 
-                status(
-                  "Localizando capa climática..."
-                )
+            # FASE 1
+            # Se invalida cualquier resultado anterior y se entrega
+            # primero el mapa ligero de la cuenca al navegador.
+            result(NULL)
+            processing(TRUE)
 
-                spatial <- read_clima_for_basin(
-                  b,
-                  progress_fun = progress_fun
-                )
+            status(
+              "Cuenca cargada. Mostrando la cuenca antes de procesar Clima..."
+            )
 
-                status(
-                  "Calculando áreas y enlazando metadata..."
-                )
+            # El trabajo pesado se difiere al siguiente ciclo del
+            # event loop. Esto permite que Shiny complete primero
+            # el renderPlot de la cuenca y lo envíe al navegador.
+            session$onFlushed(
+              function() {
 
-                progress_fun(
-                  0.92,
-                  "Calculando áreas y enlazando metadata..."
-                )
+                later::later(
+                  function() {
 
-                tab_info <- build_clima_table(
-                  clima = spatial$clima,
-                  basin = b
-                )
+                    progress <- shiny::Progress$new(
+                      session = session,
+                      min = 0,
+                      max = 1
+                    )
 
-                progress_fun(
-                  0.97,
-                  "Preparando el mapa climático..."
-                )
+                    on.exit(
+                      {
+                        progress$close()
+                        processing(FALSE)
+                      },
+                      add = TRUE
+                    )
 
-                result(
-                  list(
-                    basin = b,
-                    basin_source = if (!is.null(basin_source)) basin_source() else NULL,
-                    basin_label = if (!is.null(basin_label)) basin_label() else NULL,
-                    clima = spatial$clima,
-                    table = tab_info$table,
-                    basin_area_km2 = tab_info$basin_area_km2,
-                    epsg = tab_info$epsg,
-                    source_mode = spatial$source_mode,
-                    selected_tiles = spatial$selected_tiles
-                  )
-                )
-
-                progress_fun(
-                  1,
-                  "Clima listo."
-                )
-
-                status(
-                  paste0(
-                    "Clima listo: ",
-                    nrow(tab_info$table),
-                    " unidades | ",
-                    length(spatial$selected_tiles),
-                    if (identical(spatial$source_mode, "tiles")) {
-                      " teselas usadas."
-                    } else {
-                      " archivo usado."
+                    progress_fun <- function(
+                        value,
+                        detail
+                    ) {
+                      progress$set(
+                        message = "Cargando clima",
+                        detail = detail,
+                        value = value
+                      )
                     }
-                  )
+
+                    tryCatch(
+                      {
+                        status(
+                          "Localizando capa climática..."
+                        )
+
+                        progress_fun(
+                          0.02,
+                          "La cuenca ya está visible. Iniciando procesamiento climático..."
+                        )
+
+                        spatial <- read_clima_for_basin(
+                          b,
+                          progress_fun = progress_fun
+                        )
+
+                        status(
+                          "Calculando áreas y enlazando metadata..."
+                        )
+
+                        progress_fun(
+                          0.92,
+                          "Calculando áreas y enlazando metadata..."
+                        )
+
+                        tab_info <- build_clima_table(
+                          clima = spatial$clima,
+                          basin = b
+                        )
+
+                        progress_fun(
+                          0.97,
+                          "Preparando el mapa climático..."
+                        )
+
+                        result(
+                          list(
+                            basin = b,
+                            basin_source = if (!is.null(basin_source)) basin_source() else NULL,
+                            basin_label = if (!is.null(basin_label)) basin_label() else NULL,
+                            clima = spatial$clima,
+                            table = tab_info$table,
+                            basin_area_km2 = tab_info$basin_area_km2,
+                            epsg = tab_info$epsg,
+                            source_mode = spatial$source_mode,
+                            selected_tiles = spatial$selected_tiles
+                          )
+                        )
+
+                        progress_fun(
+                          1,
+                          "Clima listo."
+                        )
+
+                        status(
+                          paste0(
+                            "Clima listo: ",
+                            nrow(tab_info$table),
+                            " unidades | ",
+                            length(spatial$selected_tiles),
+                            if (identical(spatial$source_mode, "tiles")) {
+                              " teselas usadas."
+                            } else {
+                              " archivo usado."
+                            }
+                          )
+                        )
+                      },
+                      error = function(e) {
+                        result(NULL)
+
+                        msg <- paste0(
+                          "Error en Clima: ",
+                          conditionMessage(e)
+                        )
+
+                        status(msg)
+
+                        shiny::showNotification(
+                          msg,
+                          type = "error",
+                          duration = NULL
+                        )
+                      }
+                    )
+                  },
+                  delay = 0.15
                 )
               },
-              error = function(e) {
-                result(NULL)
-                msg <- paste0(
-                  "Error en Clima: ",
-                  conditionMessage(e)
-                )
-                status(msg)
-                shiny::showNotification(
-                  msg,
-                  type = "error",
-                  duration = NULL
-                )
-              }
+              once = TRUE
             )
           }
         )
+
 
         output$estado <- shiny::renderText({
           status()
