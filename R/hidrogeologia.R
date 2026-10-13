@@ -1764,10 +1764,9 @@ hidrogeologia <- local({
         shiny::div(
           class = "geo-head",
 
-          shiny::actionButton(
-            ns("analizar"),
-            "Cargar hidrogeología",
-            class = "btn-success"
+          shiny::uiOutput(
+            ns("analizar_ui"),
+            inline = TRUE
           ),
 
           shiny::downloadButton(
@@ -1822,7 +1821,7 @@ hidrogeologia <- local({
         shiny::conditionalPanel(
           condition = paste0(
             "output['",
-            ns("has_results"),
+            ns("has_basin"),
             "'] === 'true'"
           ),
 
@@ -1872,7 +1871,13 @@ hidrogeologia <- local({
           output,
           session
       ) {
-        result <- shiny::reactiveVal(NULL)
+        result <- shiny::reactiveVal(
+          NULL
+        )
+
+        preview_ready <- shiny::reactiveVal(
+          FALSE
+        )
 
         status <- shiny::reactiveVal(
           "Delimita o carga una cuenca para consultar Hidrogeología."
@@ -1903,9 +1908,15 @@ hidrogeologia <- local({
         shiny::observeEvent(
           current_key(),
           {
-            result(NULL)
+            result(
+              NULL
+            )
+
+            preview_ready(
+              FALSE
+            )
             status(
-              "Cuenca disponible. Pulsa Cargar hidrogeología."
+              "Preparando vista previa de la cuenca..."
             )
           },
           ignoreInit = TRUE
@@ -1914,6 +1925,23 @@ hidrogeologia <- local({
         shiny::observeEvent(
           input$analizar,
           {
+
+            progress <- shiny::Progress$new(
+              session = session,
+              min = 0,
+              max = 1
+            )
+
+            on.exit(
+              progress$close(),
+              add = TRUE
+            )
+
+            progress$set(
+              message = "Cargar hidrogeología",
+              detail = "Iniciando procesamiento temático...",
+              value = 0.05
+            )
             tryCatch(
               {
                 b <- basin()
@@ -1928,6 +1956,12 @@ hidrogeologia <- local({
                   "Cargando unidades de suelo..."
                 )
 
+                progress$set(
+                  message = "Cargar hidrogeología",
+                  detail = "Cargando unidades de suelo...",
+                  value = 0.18
+                )
+
                 spatial <- read_hydrogeology_for_basin(
                   b
                 )
@@ -1936,9 +1970,21 @@ hidrogeologia <- local({
                   "Calculando áreas y enlazando metadata..."
                 )
 
+                progress$set(
+                  message = "Cargar hidrogeología",
+                  detail = "Calculando áreas y enlazando metadata...",
+                  value = 0.72
+                )
+
                 tab_info <- build_hydrogeology_table(
                   hydrogeology = spatial$hydrogeology,
                   basin = b
+                )
+
+                progress$set(
+                  message = "Cargar hidrogeología",
+                  detail = "Preparando resultados...",
+                  value = 0.92
                 )
 
                 result(
@@ -1953,6 +1999,12 @@ hidrogeologia <- local({
                     source_mode = spatial$source_mode,
                     selected_tiles = spatial$selected_tiles
                   )
+                )
+
+                progress$set(
+                  message = "Cargar hidrogeología",
+                  detail = "Listo.",
+                  value = 1
                 )
 
                 status(
@@ -1986,9 +2038,47 @@ hidrogeologia <- local({
           }
         )
 
+        output$analizar_ui <- shiny::renderUI({
+          if (is.null(basin())) {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Cargar hidrogeología",
+              class = "btn-success",
+              disabled = "disabled"
+            )
+          } else if (!isTRUE(preview_ready())) {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Preparando cuenca...",
+              class = "btn-success",
+              disabled = "disabled"
+            )
+          } else {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Cargar hidrogeología",
+              class = "btn-success"
+            )
+          }
+        })
+
         output$estado <- shiny::renderText({
           status()
         })
+
+        output$has_basin <- shiny::renderText({
+          if (is.null(basin())) {
+            "false"
+          } else {
+            "true"
+          }
+        })
+
+        shiny::outputOptions(
+          output,
+          "has_basin",
+          suspendWhenHidden = FALSE
+        )
 
         output$has_results <- shiny::renderText({
           if (is.null(result())) {
@@ -2006,8 +2096,34 @@ hidrogeologia <- local({
 
         output$mapa <- shiny::renderPlot({
           x <- result()
-          shiny::req(x)
-          draw_hydrogeology_map(x)
+
+          if (!is.null(x)) {
+            draw_hydrogeology_map(
+              x
+            )
+          } else {
+            b <- basin()
+
+            shiny::req(
+              b
+            )
+
+            fabdem_draw_basin_preview(
+              b,
+              title = "Cuenca activa",
+              subtitle = "Cuenca visible. Pulsa Cargar hidrogeología para iniciar Hidrogeología."
+            )
+
+            if (!isTRUE(preview_ready())) {
+              preview_ready(
+                TRUE
+              )
+
+              status(
+                "Cuenca visible. Pulsa Cargar hidrogeología para iniciar el procesamiento temático."
+              )
+            }
+          }
         })
 
         output$tabla <- DT::renderDT({
@@ -2017,6 +2133,12 @@ hidrogeologia <- local({
             x$table
           )
         }, server = FALSE)
+
+        shiny::outputOptions(
+          output,
+          "tabla",
+          suspendWhenHidden = FALSE
+        )
 
         output$descargar_png <- shiny::downloadHandler(
           filename = function() {
