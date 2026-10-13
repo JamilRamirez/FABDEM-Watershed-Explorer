@@ -2303,6 +2303,18 @@ clima <- local({
           )
         }, server = FALSE)
 
+        # La tabla vive dentro de un conditionalPanel que esta
+        # oculto mientras se procesa Clima. Shiny suspende por
+        # defecto los outputs ocultos; al volver de otra pestana
+        # se reactivaba y por eso recien aparecia entonces.
+        # La mantenemos activa para que quede lista antes de que
+        # has_results haga visible el panel.
+        shiny::outputOptions(
+          output,
+          "tabla",
+          suspendWhenHidden = FALSE
+        )
+
         output$descargar_png <- shiny::downloadHandler(
           filename = function() {
             paste0(
