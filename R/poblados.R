@@ -2423,10 +2423,9 @@ poblados <- local({
         shiny::div(
           class = "ctp-head",
 
-          shiny::actionButton(
-            ns("analizar"),
-            "Cargar centros poblados",
-            class = "btn-success"
+          shiny::uiOutput(
+            ns("analizar_ui"),
+            inline = TRUE
           ),
 
           shiny::downloadButton(
@@ -2481,7 +2480,7 @@ poblados <- local({
         shiny::conditionalPanel(
           condition = paste0(
             "output['",
-            ns("has_results"),
+            ns("has_basin"),
             "'] === 'true'"
           ),
 
@@ -2539,6 +2538,10 @@ poblados <- local({
           NULL
         )
 
+        preview_ready <- shiny::reactiveVal(
+          FALSE
+        )
+
         status <- shiny::reactiveVal(
           "Delimita o carga una cuenca para consultar centros poblados."
         )
@@ -2574,8 +2577,12 @@ poblados <- local({
               NULL
             )
 
+            preview_ready(
+              FALSE
+            )
+
             status(
-              "Cuenca disponible. Pulsa Cargar centros poblados."
+              "Preparando vista previa de la cuenca..."
             )
           },
           ignoreInit = TRUE
@@ -2584,6 +2591,23 @@ poblados <- local({
         shiny::observeEvent(
           input$analizar,
           {
+
+            progress <- shiny::Progress$new(
+              session = session,
+              min = 0,
+              max = 1
+            )
+
+            on.exit(
+              progress$close(),
+              add = TRUE
+            )
+
+            progress$set(
+              message = "Cargar centros poblados",
+              detail = "Iniciando procesamiento temático...",
+              value = 0.05
+            )
             tryCatch(
               {
                 b <- basin()
@@ -2598,8 +2622,20 @@ poblados <- local({
                   "Seleccionando centros poblados dentro de la cuenca..."
                 )
 
+                progress$set(
+                  message = "Cargar centros poblados",
+                  detail = "Seleccionando centros poblados dentro de la cuenca...",
+                  value = 0.18
+                )
+
                 info <- build_poblados_result(
                   b
+                )
+
+                progress$set(
+                  message = "Cargar centros poblados",
+                  detail = "Preparando resultados...",
+                  value = 0.92
                 )
 
                 result(
@@ -2638,6 +2674,12 @@ poblados <- local({
                     dominant_district_count = info$dominant_district_count,
                     epsg = info$epsg
                   )
+                )
+
+                progress$set(
+                  message = "Cargar centros poblados",
+                  detail = "Listo.",
+                  value = 1
                 )
 
                 status(
@@ -2682,9 +2724,47 @@ poblados <- local({
           }
         )
 
+        output$analizar_ui <- shiny::renderUI({
+          if (is.null(basin())) {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Cargar centros poblados",
+              class = "btn-success",
+              disabled = "disabled"
+            )
+          } else if (!isTRUE(preview_ready())) {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Preparando cuenca...",
+              class = "btn-success",
+              disabled = "disabled"
+            )
+          } else {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Cargar centros poblados",
+              class = "btn-success"
+            )
+          }
+        })
+
         output$estado <- shiny::renderText({
           status()
         })
+
+        output$has_basin <- shiny::renderText({
+          if (is.null(basin())) {
+            "false"
+          } else {
+            "true"
+          }
+        })
+
+        shiny::outputOptions(
+          output,
+          "has_basin",
+          suspendWhenHidden = FALSE
+        )
 
         output$has_results <- shiny::renderText({
           if (is.null(
@@ -2705,13 +2785,33 @@ poblados <- local({
         output$mapa <- shiny::renderPlot({
           x <- result()
 
-          shiny::req(
-            x
-          )
+          if (!is.null(x)) {
+            draw_poblados_map(
+              x
+            )
+          } else {
+            b <- basin()
 
-          draw_poblados_map(
-            x
-          )
+            shiny::req(
+              b
+            )
+
+            fabdem_draw_basin_preview(
+              b,
+              title = "Cuenca activa",
+              subtitle = "Cuenca visible. Pulsa Cargar centros poblados para iniciar Centros poblados."
+            )
+
+            if (!isTRUE(preview_ready())) {
+              preview_ready(
+                TRUE
+              )
+
+              status(
+                "Cuenca visible. Pulsa Cargar centros poblados para iniciar el procesamiento temático."
+              )
+            }
+          }
         }, res = 120)
 
         output$tabla <- DT::renderDT({
@@ -2725,6 +2825,12 @@ poblados <- local({
             x$table
           )
         }, server = FALSE)
+
+        shiny::outputOptions(
+          output,
+          "tabla",
+          suspendWhenHidden = FALSE
+        )
 
         output$descargar_png <- shiny::downloadHandler(
           filename = function() {
