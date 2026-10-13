@@ -2215,10 +2215,9 @@ distritos <- local({
         shiny::div(
           class = "ctd-head",
 
-          shiny::actionButton(
-            ns("analizar"),
-            "Cargar división distrital",
-            class = "btn-success"
+          shiny::uiOutput(
+            ns("analizar_ui"),
+            inline = TRUE
           ),
 
           shiny::downloadButton(
@@ -2273,7 +2272,7 @@ distritos <- local({
         shiny::conditionalPanel(
           condition = paste0(
             "output['",
-            ns("has_results"),
+            ns("has_basin"),
             "'] === 'true'"
           ),
 
@@ -2331,6 +2330,10 @@ distritos <- local({
           NULL
         )
 
+        preview_ready <- shiny::reactiveVal(
+          FALSE
+        )
+
         status <- shiny::reactiveVal(
           "Delimita o carga una cuenca para consultar la división distrital."
         )
@@ -2366,8 +2369,12 @@ distritos <- local({
               NULL
             )
 
+            preview_ready(
+              FALSE
+            )
+
             status(
-              "Cuenca disponible. Pulsa Cargar división distrital."
+              "Preparando vista previa de la cuenca..."
             )
           },
           ignoreInit = TRUE
@@ -2376,6 +2383,23 @@ distritos <- local({
         shiny::observeEvent(
           input$analizar,
           {
+
+            progress <- shiny::Progress$new(
+              session = session,
+              min = 0,
+              max = 1
+            )
+
+            on.exit(
+              progress$close(),
+              add = TRUE
+            )
+
+            progress$set(
+              message = "Cargar división distrital",
+              detail = "Iniciando procesamiento temático...",
+              value = 0.05
+            )
             tryCatch(
               {
                 b <- basin()
@@ -2390,8 +2414,20 @@ distritos <- local({
                   "Intersectando la cuenca con la división distrital..."
                 )
 
+                progress$set(
+                  message = "Cargar división distrital",
+                  detail = "Intersectando la cuenca con la división distrital...",
+                  value = 0.18
+                )
+
                 dist_info <- build_district_result(
                   b
+                )
+
+                progress$set(
+                  message = "Cargar división distrital",
+                  detail = "Preparando resultados...",
+                  value = 0.92
                 )
 
                 result(
@@ -2420,6 +2456,12 @@ distritos <- local({
                     basin_area_km2 = dist_info$basin_area_km2,
                     epsg = dist_info$epsg
                   )
+                )
+
+                progress$set(
+                  message = "Cargar división distrital",
+                  detail = "Listo.",
+                  value = 1
                 )
 
                 status(
@@ -2470,9 +2512,47 @@ distritos <- local({
           }
         )
 
+        output$analizar_ui <- shiny::renderUI({
+          if (is.null(basin())) {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Cargar división distrital",
+              class = "btn-success",
+              disabled = "disabled"
+            )
+          } else if (!isTRUE(preview_ready())) {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Preparando cuenca...",
+              class = "btn-success",
+              disabled = "disabled"
+            )
+          } else {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Cargar división distrital",
+              class = "btn-success"
+            )
+          }
+        })
+
         output$estado <- shiny::renderText({
           status()
         })
+
+        output$has_basin <- shiny::renderText({
+          if (is.null(basin())) {
+            "false"
+          } else {
+            "true"
+          }
+        })
+
+        shiny::outputOptions(
+          output,
+          "has_basin",
+          suspendWhenHidden = FALSE
+        )
 
         output$has_results <- shiny::renderText({
           if (is.null(
@@ -2493,13 +2573,33 @@ distritos <- local({
         output$mapa <- shiny::renderPlot({
           x <- result()
 
-          shiny::req(
-            x
-          )
+          if (!is.null(x)) {
+            draw_district_map(
+              x
+            )
+          } else {
+            b <- basin()
 
-          draw_district_map(
-            x
-          )
+            shiny::req(
+              b
+            )
+
+            fabdem_draw_basin_preview(
+              b,
+              title = "Cuenca activa",
+              subtitle = "Cuenca visible. Pulsa Cargar división distrital para iniciar División distrital."
+            )
+
+            if (!isTRUE(preview_ready())) {
+              preview_ready(
+                TRUE
+              )
+
+              status(
+                "Cuenca visible. Pulsa Cargar división distrital para iniciar el procesamiento temático."
+              )
+            }
+          }
         }, res = 120)
 
         output$tabla <- DT::renderDT({
@@ -2513,6 +2613,12 @@ distritos <- local({
             x$table
           )
         }, server = FALSE)
+
+        shiny::outputOptions(
+          output,
+          "tabla",
+          suspendWhenHidden = FALSE
+        )
 
         output$descargar_png <- shiny::downloadHandler(
           filename = function() {
