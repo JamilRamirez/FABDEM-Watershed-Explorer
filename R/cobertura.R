@@ -1765,10 +1765,9 @@ cobertura <- local({
         shiny::div(
           class = "cob-head",
 
-          shiny::actionButton(
-            ns("analizar"),
-            "Cargar cobertura y uso",
-            class = "btn-success"
+          shiny::uiOutput(
+            ns("analizar_ui"),
+            inline = TRUE
           ),
 
           shiny::downloadButton(
@@ -1823,7 +1822,7 @@ cobertura <- local({
         shiny::conditionalPanel(
           condition = paste0(
             "output['",
-            ns("has_results"),
+            ns("has_basin"),
             "'] === 'true'"
           ),
 
@@ -1873,7 +1872,13 @@ cobertura <- local({
           output,
           session
       ) {
-        result <- shiny::reactiveVal(NULL)
+        result <- shiny::reactiveVal(
+          NULL
+        )
+
+        preview_ready <- shiny::reactiveVal(
+          FALSE
+        )
 
         status <- shiny::reactiveVal(
           "Delimita o carga una cuenca para consultar Cobertura y uso."
@@ -1904,9 +1909,15 @@ cobertura <- local({
         shiny::observeEvent(
           current_key(),
           {
-            result(NULL)
+            result(
+              NULL
+            )
+
+            preview_ready(
+              FALSE
+            )
             status(
-              "Cuenca disponible. Pulsa Cargar cobertura y uso."
+              "Preparando vista previa de la cuenca..."
             )
           },
           ignoreInit = TRUE
@@ -1915,6 +1926,23 @@ cobertura <- local({
         shiny::observeEvent(
           input$analizar,
           {
+
+            progress <- shiny::Progress$new(
+              session = session,
+              min = 0,
+              max = 1
+            )
+
+            on.exit(
+              progress$close(),
+              add = TRUE
+            )
+
+            progress$set(
+              message = "Cargar cobertura y uso",
+              detail = "Iniciando procesamiento temático...",
+              value = 0.05
+            )
             tryCatch(
               {
                 b <- basin()
@@ -1929,6 +1957,12 @@ cobertura <- local({
                   "Localizando capa de cobertura y uso..."
                 )
 
+                progress$set(
+                  message = "Cargar cobertura y uso",
+                  detail = "Localizando capa de cobertura y uso...",
+                  value = 0.18
+                )
+
                 spatial <- read_cobertura_for_basin(
                   b
                 )
@@ -1937,9 +1971,21 @@ cobertura <- local({
                   "Calculando áreas y enlazando metadata..."
                 )
 
+                progress$set(
+                  message = "Cargar cobertura y uso",
+                  detail = "Calculando áreas y enlazando metadata...",
+                  value = 0.72
+                )
+
                 tab_info <- build_cobertura_table(
                   cobertura = spatial$cobertura,
                   basin = b
+                )
+
+                progress$set(
+                  message = "Cargar cobertura y uso",
+                  detail = "Preparando resultados...",
+                  value = 0.92
                 )
 
                 result(
@@ -1954,6 +2000,12 @@ cobertura <- local({
                     source_mode = spatial$source_mode,
                     selected_tiles = spatial$selected_tiles
                   )
+                )
+
+                progress$set(
+                  message = "Cargar cobertura y uso",
+                  detail = "Listo.",
+                  value = 1
                 )
 
                 status(
@@ -1987,9 +2039,47 @@ cobertura <- local({
           }
         )
 
+        output$analizar_ui <- shiny::renderUI({
+          if (is.null(basin())) {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Cargar cobertura y uso",
+              class = "btn-success",
+              disabled = "disabled"
+            )
+          } else if (!isTRUE(preview_ready())) {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Preparando cuenca...",
+              class = "btn-success",
+              disabled = "disabled"
+            )
+          } else {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Cargar cobertura y uso",
+              class = "btn-success"
+            )
+          }
+        })
+
         output$estado <- shiny::renderText({
           status()
         })
+
+        output$has_basin <- shiny::renderText({
+          if (is.null(basin())) {
+            "false"
+          } else {
+            "true"
+          }
+        })
+
+        shiny::outputOptions(
+          output,
+          "has_basin",
+          suspendWhenHidden = FALSE
+        )
 
         output$has_results <- shiny::renderText({
           if (is.null(result())) {
@@ -2007,8 +2097,34 @@ cobertura <- local({
 
         output$mapa <- shiny::renderPlot({
           x <- result()
-          shiny::req(x)
-          draw_cobertura_map(x)
+
+          if (!is.null(x)) {
+            draw_cobertura_map(
+              x
+            )
+          } else {
+            b <- basin()
+
+            shiny::req(
+              b
+            )
+
+            fabdem_draw_basin_preview(
+              b,
+              title = "Cuenca activa",
+              subtitle = "Cuenca visible. Pulsa Cargar cobertura y uso para iniciar Cobertura y uso."
+            )
+
+            if (!isTRUE(preview_ready())) {
+              preview_ready(
+                TRUE
+              )
+
+              status(
+                "Cuenca visible. Pulsa Cargar cobertura y uso para iniciar el procesamiento temático."
+              )
+            }
+          }
         })
 
         output$tabla <- DT::renderDT({
@@ -2018,6 +2134,12 @@ cobertura <- local({
             x$table
           )
         }, server = FALSE)
+
+        shiny::outputOptions(
+          output,
+          "tabla",
+          suspendWhenHidden = FALSE
+        )
 
         output$descargar_png <- shiny::downloadHandler(
           filename = function() {
