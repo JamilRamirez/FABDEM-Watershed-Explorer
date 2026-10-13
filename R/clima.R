@@ -329,6 +329,22 @@ clima <- local({
   }
 
 
+  clima_progress <- function(
+      progress_fun,
+      value,
+      detail
+  ) {
+    if (!is.null(progress_fun)) {
+      progress_fun(
+        value,
+        detail
+      )
+    }
+
+    invisible(NULL)
+  }
+
+
   # ==========================================================
   # 3. CARGA ESPACIAL TESelADA
   # ==========================================================
@@ -391,7 +407,16 @@ clima <- local({
   }
 
 
-  read_clima_for_basin <- function(basin) {
+  read_clima_for_basin <- function(
+      basin,
+      progress_fun = NULL
+  ) {
+    clima_progress(
+      progress_fun,
+      0.05,
+      "Validando la cuenca activa..."
+    )
+
     basin <- sf::st_make_valid(basin)
     basin <- basin[
       !sf::st_is_empty(basin),
@@ -402,6 +427,12 @@ clima <- local({
     if (nrow(basin) == 0L) {
       stop("La cuenca activa está vacía.")
     }
+
+    clima_progress(
+      progress_fun,
+      0.12,
+      "Localizando la fuente climática..."
+    )
 
     idx <- clima_index()
     pieces <- list()
@@ -441,13 +472,29 @@ clima <- local({
         character(1)
       )
 
-      missing_tiles <- selected_tiles[
-        !vapply(
-          selected_tiles,
-          file_nonempty_local,
-          logical(1)
+      missing_tiles <- character(0)
+
+      for (i in seq_along(selected_tiles)) {
+
+        clima_progress(
+          progress_fun,
+          0.20 + 0.30 * ((i - 1L) / max(1L, length(selected_tiles))),
+          paste0(
+            "Descargando tesela climática ",
+            i,
+            " de ",
+            length(selected_tiles),
+            "..."
+          )
         )
-      ]
+
+        if (!file_nonempty_local(selected_tiles[i])) {
+          missing_tiles <- c(
+            missing_tiles,
+            selected_tiles[i]
+          )
+        }
+      }
 
       if (length(missing_tiles) > 0L) {
         stop(
@@ -459,6 +506,19 @@ clima <- local({
       }
 
       for (i in seq_along(selected_tiles)) {
+
+        clima_progress(
+          progress_fun,
+          0.50 + 0.15 * ((i - 1L) / max(1L, length(selected_tiles))),
+          paste0(
+            "Leyendo tesela climática ",
+            i,
+            " de ",
+            length(selected_tiles),
+            "..."
+          )
+        )
+
         g <- sf::st_read(
           selected_tiles[i],
           layer = "data",
@@ -488,6 +548,12 @@ clima <- local({
     } else {
       original <- clima_original_file()
 
+      clima_progress(
+        progress_fun,
+        0.22,
+        "Descargando la capa climática..."
+      )
+
       if (!file_nonempty_local(original)) {
         stop(
           paste0(
@@ -499,6 +565,12 @@ clima <- local({
           )
         )
       }
+
+      clima_progress(
+        progress_fun,
+        0.55,
+        "Leyendo la capa climática..."
+      )
 
       layers <- sf::st_layers(original)$name
 
@@ -525,6 +597,12 @@ clima <- local({
       source_mode <- "original"
       selected_tiles <- original
     }
+
+    clima_progress(
+      progress_fun,
+      0.68,
+      "Preparando geometrías climáticas..."
+    )
 
     crs_ref <- sf::st_crs(
       pieces[[1L]]
@@ -575,6 +653,12 @@ clima <- local({
       )
     )
 
+    clima_progress(
+      progress_fun,
+      0.76,
+      "Identificando unidades que intersectan la cuenca..."
+    )
+
     keep <- lengths(
       sf::st_intersects(
         clima_all,
@@ -591,6 +675,12 @@ clima <- local({
     if (nrow(clima_all) == 0L) {
       stop("Clima no contiene unidades dentro de la cuenca.")
     }
+
+    clima_progress(
+      progress_fun,
+      0.84,
+      "Recortando la capa climática a la cuenca..."
+    )
 
     clipped <- suppressWarnings(
       sf::st_intersection(
@@ -643,6 +733,12 @@ clima <- local({
       ,
       drop = FALSE
     ]
+
+    clima_progress(
+      progress_fun,
+      0.88,
+      "Recorte climático completado."
+    )
 
     list(
       clima = clipped,
@@ -1137,6 +1233,87 @@ clima <- local({
     }
 
     max(candidates)
+  }
+
+
+  draw_clima_preview_map <- function(basin) {
+
+    basin <- sf::st_make_valid(
+      basin
+    )
+
+    basin <- basin[
+      !sf::st_is_empty(basin),
+      ,
+      drop = FALSE
+    ]
+
+    if (nrow(basin) < 1L) {
+      return(
+        invisible(NULL)
+      )
+    }
+
+    basin <- sf::st_transform(
+      basin,
+      4326
+    )
+
+    old_par <- graphics::par(
+      no.readonly = TRUE
+    )
+
+    on.exit(
+      graphics::par(old_par),
+      add = TRUE
+    )
+
+    graphics::par(
+      mar = c(3.5, 3.8, 2.2, 1.2),
+      bg = "white"
+    )
+
+    graphics::plot(
+      sf::st_geometry(
+        basin
+      ),
+      col = grDevices::adjustcolor(
+        "#5B8DB8",
+        alpha.f = 0.16
+      ),
+      border = "#1F4E79",
+      lwd = 2.2,
+      axes = TRUE,
+      main = "Cuenca activa"
+    )
+
+    graphics::grid(
+      col = grDevices::adjustcolor(
+        "#9E9E9E",
+        alpha.f = 0.28
+      ),
+      lty = 3
+    )
+
+    graphics::plot(
+      sf::st_geometry(
+        basin
+      ),
+      add = TRUE,
+      col = NA,
+      border = "#1F4E79",
+      lwd = 2.2
+    )
+
+    graphics::mtext(
+      "La cuenca ya está cargada. La capa climática se incorporará al finalizar el procesamiento.",
+      side = 1,
+      line = 2.4,
+      cex = 0.78,
+      col = "#555555"
+    )
+
+    invisible(NULL)
   }
 
 
@@ -1823,13 +2000,18 @@ clima <- local({
         shiny::conditionalPanel(
           condition = paste0(
             "output['",
-            ns("has_results"),
+            ns("has_basin"),
             "'] === 'true'"
           ),
 
           shiny::div(
             class = "cli-card",
-            shiny::tags$h4("Mapa climático"),
+            shiny::tags$h4(
+              shiny::textOutput(
+                ns("map_title"),
+                inline = TRUE
+              )
+            ),
             shiny::div(
               class = "cli-a3-frame",
               shiny::plotOutput(
@@ -1838,6 +2020,14 @@ clima <- local({
                 height = "100%"
               )
             )
+          )
+        ),
+
+        shiny::conditionalPanel(
+          condition = paste0(
+            "output['",
+            ns("has_results"),
+            "'] === 'true'"
           ),
 
           shiny::div(
@@ -1906,7 +2096,7 @@ clima <- local({
           {
             result(NULL)
             status(
-              "Cuenca disponible. Pulsa Cargar clima."
+              "Cuenca cargada. El mapa base ya está disponible; pulsa Cargar clima para incorporar la capa temática."
             )
           },
           ignoreInit = TRUE
@@ -1915,6 +2105,29 @@ clima <- local({
         shiny::observeEvent(
           input$analizar,
           {
+
+            progress <- shiny::Progress$new(
+              session = session,
+              min = 0,
+              max = 1
+            )
+
+            on.exit(
+              progress$close(),
+              add = TRUE
+            )
+
+            progress_fun <- function(
+                value,
+                detail
+            ) {
+              progress$set(
+                message = "Cargando clima",
+                detail = detail,
+                value = value
+              )
+            }
+
             tryCatch(
               {
                 b <- basin()
@@ -1930,16 +2143,27 @@ clima <- local({
                 )
 
                 spatial <- read_clima_for_basin(
-                  b
+                  b,
+                  progress_fun = progress_fun
                 )
 
                 status(
                   "Calculando áreas y enlazando metadata..."
                 )
 
+                progress_fun(
+                  0.92,
+                  "Calculando áreas y enlazando metadata..."
+                )
+
                 tab_info <- build_clima_table(
                   clima = spatial$clima,
                   basin = b
+                )
+
+                progress_fun(
+                  0.97,
+                  "Preparando el mapa climático..."
                 )
 
                 result(
@@ -1954,6 +2178,11 @@ clima <- local({
                     source_mode = spatial$source_mode,
                     selected_tiles = spatial$selected_tiles
                   )
+                )
+
+                progress_fun(
+                  1,
+                  "Clima listo."
                 )
 
                 status(
@@ -1991,6 +2220,28 @@ clima <- local({
           status()
         })
 
+        output$has_basin <- shiny::renderText({
+          if (is.null(basin())) {
+            "false"
+          } else {
+            "true"
+          }
+        })
+
+        shiny::outputOptions(
+          output,
+          "has_basin",
+          suspendWhenHidden = FALSE
+        )
+
+        output$map_title <- shiny::renderText({
+          if (is.null(result())) {
+            "Cuenca activa"
+          } else {
+            "Mapa climático"
+          }
+        })
+
         output$has_results <- shiny::renderText({
           if (is.null(result())) {
             "false"
@@ -2007,8 +2258,14 @@ clima <- local({
 
         output$mapa <- shiny::renderPlot({
           x <- result()
-          shiny::req(x)
-          draw_clima_map(x)
+
+          if (!is.null(x)) {
+            draw_clima_map(x)
+          } else {
+            b <- basin()
+            shiny::req(b)
+            draw_clima_preview_map(b)
+          }
         })
 
         output$tabla <- DT::renderDT({
