@@ -7225,3 +7225,104 @@ fabdem_google_earth_geometry <- function(
   )
 }
 
+
+
+
+# ============================================================
+# PREVIEW LIGERO COMUN DE CUENCA PARA MODULOS TEMATICOS
+# ============================================================
+#
+# Solo visualiza la cuenca ya disponible. No valida, simplifica,
+# intersecta ni modifica la geometria de analisis.
+
+fabdem_draw_basin_preview <- function(
+    basin,
+    title = "Cuenca activa",
+    subtitle = paste0(
+      "La cuenca ya esta cargada. ",
+      "Pulsa el boton de la capa para iniciar el procesamiento tematico."
+    )
+) {
+
+  if (
+    is.null(basin) ||
+    !inherits(basin, "sf") ||
+    nrow(basin) < 1L
+  ) {
+    return(invisible(NULL))
+  }
+
+  basin_4326 <- if (
+    !is.na(sf::st_crs(basin)) &&
+    isTRUE(sf::st_crs(basin) == sf::st_crs(4326))
+  ) {
+    basin
+  } else {
+    sf::st_transform(
+      basin,
+      4326
+    )
+  }
+
+  old_par <- graphics::par(
+    no.readonly = TRUE
+  )
+
+  on.exit(
+    graphics::par(old_par),
+    add = TRUE
+  )
+
+  graphics::par(
+    mar = c(3.5, 3.8, 2.2, 1.2),
+    bg = "white"
+  )
+
+  graphics::plot(
+    sf::st_geometry(
+      basin_4326
+    ),
+    col = grDevices::adjustcolor(
+      "#5B8DB8",
+      alpha.f = 0.16
+    ),
+    border = "#1F4E79",
+    lwd = 2.2,
+    axes = TRUE,
+    main = title
+  )
+
+  graphics::grid(
+    col = grDevices::adjustcolor(
+      "#9E9E9E",
+      alpha.f = 0.28
+    ),
+    lty = 3
+  )
+
+  graphics::plot(
+    sf::st_geometry(
+      basin_4326
+    ),
+    add = TRUE,
+    col = NA,
+    border = "#1F4E79",
+    lwd = 2.2
+  )
+
+  if (
+    length(subtitle) == 1L &&
+    !is.na(subtitle) &&
+    nzchar(subtitle)
+  ) {
+    graphics::mtext(
+      subtitle,
+      side = 1,
+      line = 2.4,
+      cex = 0.78,
+      col = "#555555"
+    )
+  }
+
+  invisible(NULL)
+}
