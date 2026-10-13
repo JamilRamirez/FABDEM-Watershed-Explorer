@@ -2019,7 +2019,7 @@ clima <- local({
         shiny::conditionalPanel(
           condition = paste0(
             "output['",
-            ns("has_results"),
+            ns("has_basin"),
             "'] === 'true'"
           ),
 
