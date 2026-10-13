@@ -853,6 +853,100 @@ clima <- local({
   }
 
 
+  build_clima_map_geometry <- function(
+      clima,
+      basin,
+      epsg
+  ) {
+
+    basin_utm <- sf::st_transform(
+      basin,
+      epsg
+    )
+
+    clima_utm <- sf::st_transform(
+      clima,
+      epsg
+    )
+
+    bb <- sf::st_bbox(
+      basin_utm
+    )
+
+    map_span_m <- max(
+      as.numeric(
+        bb["xmax"] - bb["xmin"]
+      ),
+      as.numeric(
+        bb["ymax"] - bb["ymin"]
+      ),
+      na.rm = TRUE
+    )
+
+    tolerance_m <- if (
+      is.finite(map_span_m) &&
+      map_span_m > 0
+    ) {
+      max(
+        20,
+        min(
+          250,
+          map_span_m / 2200
+        )
+      )
+    } else {
+      60
+    }
+
+    clima_map <- suppressWarnings(
+      sf::st_simplify(
+        clima_utm,
+        dTolerance = tolerance_m,
+        preserveTopology = TRUE
+      )
+    )
+
+    clima_map <- clima_map[
+      !sf::st_is_empty(
+        clima_map
+      ),
+      ,
+      drop = FALSE
+    ]
+
+    basin_map <- suppressWarnings(
+      sf::st_simplify(
+        basin_utm,
+        dTolerance = max(
+          10,
+          tolerance_m / 2
+        ),
+        preserveTopology = TRUE
+      )
+    )
+
+    basin_map <- basin_map[
+      !sf::st_is_empty(
+        basin_map
+      ),
+      ,
+      drop = FALSE
+    ]
+
+    list(
+      clima = sf::st_transform(
+        clima_map,
+        4326
+      ),
+      basin = sf::st_transform(
+        basin_map,
+        4326
+      ),
+      tolerance_m = tolerance_m
+    )
+  }
+
+
   # ==========================================================
   # 5. CONTEXTO DEPARTAMENTAL PARA EL MAPA
   # ==========================================================
@@ -1312,15 +1406,16 @@ clima <- local({
 
 
   draw_clima_map <- function(x) {
-    basin <- sf::st_transform(
-      x$basin,
-      4326
-    )
+    basin <- if (!is.null(x$basin_map)) {
+      x$basin_map
+    } else {
+      sf::st_transform(
+        x$basin,
+        4326
+      )
+    }
 
-    clima <- sf::st_transform(
-      x$clima,
-      4326
-    )
+    clima <- x$clima
 
     tab <- x$table
     epsg <- x$epsg
@@ -2197,22 +2292,52 @@ clima <- local({
                         )
 
                         progress_fun(
-                          0.97,
+                          0.96,
+                          "Simplificando geometría para visualización..."
+                        )
+
+                        map_geometry <- build_clima_map_geometry(
+                          clima = spatial$clima,
+                          basin = b,
+                          epsg = tab_info$epsg
+                        )
+
+                        progress_fun(
+                          0.99,
                           "Preparando el mapa climático..."
+                        )
+
+                        selected_tiles_final <- spatial$selected_tiles
+                        source_mode_final <- spatial$source_mode
+
+                        # El recorte exacto ya cumplió su función:
+                        # tabla/áreas. Para el mapa se conserva solo
+                        # la geometría simplificada, reduciendo mucho
+                        # la memoria de la sesión.
+                        spatial <- NULL
+                        gc(
+                          verbose = FALSE
                         )
 
                         result(
                           list(
                             basin = b,
+                            basin_map = map_geometry$basin,
                             basin_source = if (!is.null(basin_source)) basin_source() else NULL,
                             basin_label = if (!is.null(basin_label)) basin_label() else NULL,
-                            clima = spatial$clima,
+                            clima = map_geometry$clima,
+                            map_tolerance_m = map_geometry$tolerance_m,
                             table = tab_info$table,
                             basin_area_km2 = tab_info$basin_area_km2,
                             epsg = tab_info$epsg,
-                            source_mode = spatial$source_mode,
-                            selected_tiles = spatial$selected_tiles
+                            source_mode = source_mode_final,
+                            selected_tiles = selected_tiles_final
                           )
+                        )
+
+                        map_geometry <- NULL
+                        gc(
+                          verbose = FALSE
                         )
 
                         progress_fun(
