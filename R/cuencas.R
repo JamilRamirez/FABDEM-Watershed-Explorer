@@ -3076,10 +3076,9 @@ cuencas <- local({
         shiny::div(
           class = "ctc-head",
 
-          shiny::actionButton(
-            ns("analizar"),
-            "Cargar cuencas y ríos",
-            class = "btn-success"
+          shiny::uiOutput(
+            ns("analizar_ui"),
+            inline = TRUE
           ),
 
           shiny::downloadButton(
@@ -3134,7 +3133,7 @@ cuencas <- local({
         shiny::conditionalPanel(
           condition = paste0(
             "output['",
-            ns("has_results"),
+            ns("has_basin"),
             "'] === 'true'"
           ),
 
@@ -3188,7 +3187,13 @@ cuencas <- local({
           output,
           session
       ) {
-        result <- shiny::reactiveVal(NULL)
+        result <- shiny::reactiveVal(
+          NULL
+        )
+
+        preview_ready <- shiny::reactiveVal(
+          FALSE
+        )
 
         status <- shiny::reactiveVal(
           "Delimita o carga una cuenca para consultar el contexto hidrográfico."
@@ -3219,9 +3224,15 @@ cuencas <- local({
         shiny::observeEvent(
           current_key(),
           {
-            result(NULL)
+            result(
+              NULL
+            )
+
+            preview_ready(
+              FALSE
+            )
             status(
-              "Cuenca disponible. Pulsa Cargar cuencas y ríos."
+              "Preparando vista previa de la cuenca..."
             )
           },
           ignoreInit = TRUE
@@ -3230,6 +3241,23 @@ cuencas <- local({
         shiny::observeEvent(
           input$analizar,
           {
+
+            progress <- shiny::Progress$new(
+              session = session,
+              min = 0,
+              max = 1
+            )
+
+            on.exit(
+              progress$close(),
+              add = TRUE
+            )
+
+            progress$set(
+              message = "Cargar cuencas y ríos",
+              detail = "Iniciando procesamiento temático...",
+              value = 0.05
+            )
             tryCatch(
               {
                 b <- basin()
@@ -3244,12 +3272,24 @@ cuencas <- local({
                   "Cargando unidades hidrográficas oficiales..."
                 )
 
+                progress$set(
+                  message = "Cargar cuencas y ríos",
+                  detail = "Cargando unidades hidrográficas oficiales...",
+                  value = 0.18
+                )
+
                 spatial <- read_cuencas_for_basin(
                   b
                 )
 
                 status(
                   "Cargando y recortando la red hidrográfica..."
+                )
+
+                progress$set(
+                  message = "Cargar cuencas y ríos",
+                  detail = "Cargando y recortando la red hidrográfica...",
+                  value = 0.72
                 )
 
                 river_info <- read_rivers_for_basin(
@@ -3263,6 +3303,12 @@ cuencas <- local({
                 tab_info <- build_cuencas_table(
                   cuencas = spatial$cuencas,
                   basin = b
+                )
+
+                progress$set(
+                  message = "Cargar cuencas y ríos",
+                  detail = "Preparando resultados...",
+                  value = 0.92
                 )
 
                 result(
@@ -3281,6 +3327,12 @@ cuencas <- local({
                     river_source_mode = river_info$source_mode,
                     river_selected_tiles = river_info$selected_tiles
                   )
+                )
+
+                progress$set(
+                  message = "Cargar cuencas y ríos",
+                  detail = "Listo.",
+                  value = 1
                 )
 
                 status(
@@ -3315,9 +3367,47 @@ cuencas <- local({
           }
         )
 
+        output$analizar_ui <- shiny::renderUI({
+          if (is.null(basin())) {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Cargar cuencas y ríos",
+              class = "btn-success",
+              disabled = "disabled"
+            )
+          } else if (!isTRUE(preview_ready())) {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Preparando cuenca...",
+              class = "btn-success",
+              disabled = "disabled"
+            )
+          } else {
+            shiny::actionButton(
+              session$ns("analizar"),
+              "Cargar cuencas y ríos",
+              class = "btn-success"
+            )
+          }
+        })
+
         output$estado <- shiny::renderText({
           status()
         })
+
+        output$has_basin <- shiny::renderText({
+          if (is.null(basin())) {
+            "false"
+          } else {
+            "true"
+          }
+        })
+
+        shiny::outputOptions(
+          output,
+          "has_basin",
+          suspendWhenHidden = FALSE
+        )
 
         output$has_results <- shiny::renderText({
           if (is.null(result())) {
@@ -3335,93 +3425,35 @@ cuencas <- local({
 
         output$mapa <- shiny::renderPlot({
           x <- result()
-          shiny::req(x)
-          draw_cuencas_map(x)
+
+          if (!is.null(x)) {
+            draw_cuencas_map(
+              x
+            )
+          } else {
+            b <- basin()
+
+            shiny::req(
+              b
+            )
+
+            fabdem_draw_basin_preview(
+              b,
+              title = "Cuenca activa",
+              subtitle = "Cuenca visible. Pulsa Cargar cuencas y ríos para iniciar Cuencas y ríos."
+            )
+
+            if (!isTRUE(preview_ready())) {
+              preview_ready(
+                TRUE
+              )
+
+              status(
+                "Cuenca visible. Pulsa Cargar cuencas y ríos para iniciar el procesamiento temático."
+              )
+            }
+          }
         }, res = 120)
-
-        output$interpretacion <- shiny::renderUI({
-          x <- result()
-          shiny::req(x)
-
-          tab <- x$table
-
-          if (is.null(tab) || nrow(tab) == 0L) {
-            return(NULL)
-          }
-
-          principal <- tab[
-            which.max(
-              tab$CUENCA_PCT
-            ),
-            ,
-            drop = FALSE
-          ]
-
-          nombre <- principal$DESCRIPCION[1L]
-          pct <- principal$CUENCA_PCT[1L]
-
-          if (
-            is.na(nombre) ||
-            !nzchar(trimws(nombre))
-          ) {
-            nombre <- principal$CODIGO[1L]
-          }
-
-          pct_txt <- if (is.finite(pct)) {
-            paste0(
-              formatC(
-                pct,
-                format = "f",
-                digits = 2
-              ),
-              "%"
-            )
-          } else {
-            "porcentaje no disponible"
-          }
-
-          if (
-            nrow(tab) == 1L
-          ) {
-            msg <- paste0(
-              "La cuenca delimitada coincide con la unidad hidrográfica oficial ",
-              nombre,
-              " (",
-              pct_txt,
-              ")."
-            )
-          } else if (
-            is.finite(pct) &&
-            pct >= 90
-          ) {
-            msg <- paste0(
-              "Interpretación: la cuenca delimitada corresponde principalmente a ",
-              nombre,
-              " (",
-              pct_txt,
-              "). Las intersecciones menores con unidades vecinas pueden aparecer ",
-              "por diferencias entre la delimitación derivada del DEM y los límites ",
-              "oficiales de las unidades hidrográficas."
-            )
-          } else {
-            msg <- paste0(
-              "Interpretación: la mayor intersección corresponde a ",
-              nombre,
-              " (",
-              pct_txt,
-              "), pero la delimitación cruza varias unidades hidrográficas oficiales. ",
-              "Revise el mapa y los porcentajes antes de asumir una correspondencia única."
-            )
-          }
-
-          shiny::div(
-            class = "ctc-interpret",
-            shiny::HTML(
-              msg
-            )
-          )
-        })
-
 
         output$tabla <- DT::renderDT({
           x <- result()
@@ -3430,6 +3462,12 @@ cuencas <- local({
             x$table
           )
         }, server = FALSE)
+
+        shiny::outputOptions(
+          output,
+          "tabla",
+          suspendWhenHidden = FALSE
+        )
 
         output$descargar_png <- shiny::downloadHandler(
           filename = function() {
